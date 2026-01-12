@@ -3,10 +3,11 @@ import shioaji as sj
 import pandas as pd
 import time
 import requests
+import os
 from datetime import datetime, timedelta
 
 # ==========================================
-# 1. 資源與連線緩存 (防止重複登入)
+# 1. 資源與連線緩存 (確保整個連線週期只登入一次)
 # ==========================================
 @st.cache_resource
 def get_shioaji_api(api_key, secret_key):
@@ -15,31 +16,29 @@ def get_shioaji_api(api_key, secret_key):
     return api
 
 # ==========================================
-# 2. 初始化與 UI 設定
+# 2. 初始化 Session State 屬性 (解決報錯關鍵)
 # ==========================================
-st.set_page_config(page_title="當沖雷達 - 穩定修正版", layout="wide")
-
-API_KEY = st.secrets.get("API_KEY", "")
-SECRET_KEY = st.secrets.get("SECRET_KEY", "")
-DISCORD_WEBHOOK_URL = st.secrets.get("DISCORD_WEBHOOK_URL", "")
-
-if "running" not in st.session_state:
-    st.session_state.running = False
-if "reported_codes" not in st.session_state:
-    st.session_state.reported_codes = set()
-if "last_total_vol_map" not in st.session_state:
-    st.session_state.last_total_vol_map = {}
-if "trigger_history" not in st.session_state:
-    st.session_state.trigger_history = {}
-if "market_history" not in st.session_state:
-    st.session_state.market_history = {"001": [], "OTC": []}
-if "market_safe" not in st.session_state:
-    st.session_state.market_safe = True
+def init_session_state():
+    defaults = {
+        "running": False,
+        "reported_codes": set(),
+        "last_total_vol_map": {},
+        "trigger_history": {},
+        "market_history": {"001": [], "OTC": []},
+        "market_safe": True,
+        "ref_map": None,
+        "name_map": None,
+        "all_contracts": None,
+        "m_contracts": None
+    }
+    for key, val in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = val
 
 # ==========================================
-# 3. Discord 發送功能
+# 3. 核心通報排版 (文字對齊)
 # ==========================================
-def send_winner_alert(item, is_test=False):
+def send_winner_alert(item, webhook_url, is_test=False):
     header = "🧪 測試發報" if is_test else "🚀 財神降臨！發財電報"
     content = f"### {header}\n"
     content += f"```yaml\n"
@@ -52,14 +51,21 @@ def send_winner_alert(item, is_test=False):
     content += f"{'偵測次數':<4}: {item['hit']} 次\n"
     content += "```"
     try:
-        requests.post(DISCORD_WEBHOOK_URL, json={"content": content}, timeout=5)
+        requests.post(webhook_url, json={"content": content}, timeout=5)
     except: pass
 
 # ==========================================
-# 4. 側邊欄控制
+# 4. 側邊欄設定
 # ==========================================
+st.set_page_config(page_title="當沖雷達 - 穩定修復版", layout="wide")
+init_session_state()
+
 with st.sidebar:
-    st.header("⚙️ 參數監控")
+    st.header("⚙️ 核心監控參數")
+    API_KEY = st.text_input("Shioaji API Key", value=st.secrets.get("API_KEY", ""), type="password")
+    SECRET_KEY = st.text_input("Shioaji Secret", value=st.secrets.get("SECRET_KEY", ""), type="password")
+    DISCORD_URL = st.text_input("Discord Webhook URL", value=st.secrets.get("DISCORD_WEBHOOK_URL", ""))
+    
     scan_interval = st.slider("掃頻速度(秒)", 5, 60, 10)
     min_chg = st.number_input("1. 漲幅下限%", value=2.5)
     prev_vol_min = st.number_input("2. 昨日交易量 >", value=3000)
@@ -69,8 +75,8 @@ with st.sidebar:
     back_limit = st.number_input("6. 回撤限制%", value=1.2)
     vwap_dist_thr = st.number_input("7. 均價乖離% <", value=3.5)
 
-    if st.button("🚀 測試 Discord 通報", use_container_width=True):
-        send_winner_alert({"code": "2330", "name": "台積電", "price": 1000, "chg": 5, "tp": 1025, "sl": 985, "hit": 10}, is_test=True)
+    if st.button("🚀 測試 Discord 通報內容", use_container_width=True):
+        send_winner_alert({"code": "2330", "name": "台積電", "price": 1000, "chg": 5, "tp": 1025, "sl": 985, "hit": 10}, DISCORD_URL, is_test=True)
 
     if not st.session_state.running:
         if st.button("▶ 啟動雷達", type="primary", use_container_width=True):
@@ -82,43 +88,44 @@ with st.sidebar:
             st.rerun()
 
 # ==========================================
-# 5. 主執行邏輯
+# 5. 主循環 (全功能移植)
 # ==========================================
 if st.session_state.running:
     try:
         api = get_shioaji_api(API_KEY, SECRET_KEY)
         
-        # 緩存合約資訊
-        if "ref_map" not in st.session_state:
-            with st.spinner("載入全台股合約中..."):
+        # A. 合約初始化 (只執行一次)
+        if st.session_state.ref_map is None:
+            with st.spinner("正在同步全市場股票合約..."):
                 raw = [c for m in [api.Contracts.Stocks.TSE, api.Contracts.Stocks.OTC] for c in m if len(c.code) == 4]
                 st.session_state.ref_map = {c.code: float(c.reference) for c in raw if c.reference}
                 st.session_state.name_map = {c.code: c.name for c in raw}
                 st.session_state.all_contracts = [c for c in raw if c.code in st.session_state.ref_map]
                 st.session_state.m_contracts = [api.Contracts.Indices.TSE["001"], api.Contracts.Indices.OTC["OTC"]]
 
-        # 大盤風險檢查
+        # B. 大盤風險檢查
         snaps_m = api.snapshots(st.session_state.m_contracts)
         now = datetime.now()
+        danger_count = 0
         for s in snaps_m:
             if s.close <= 0: continue
-            st.session_state.market_history[s.code] = [(t, p) for t, p in st.session_state.market_history[s.code] if t > now - timedelta(minutes=5)]
+            hist = st.session_state.market_history[s.code]
+            st.session_state.market_history[s.code] = [(t, p) for t, p in hist if t > now - timedelta(minutes=5)]
             st.session_state.market_history[s.code].append((now, s.close))
             past = [p for t, p in st.session_state.market_history[s.code] if t < now - timedelta(minutes=2)]
             if past and (s.close - past[-1]) / past[-1] * 100 < -0.15:
-                st.session_state.market_safe = False
-            else:
-                st.session_state.market_safe = True
+                danger_count += 1
+        st.session_state.market_safe = (danger_count == 0)
 
-        # 動態量基準計算
+        # C. 基準總量分析
         hm = now.hour * 100 + now.minute
         vol_base = 0.25 if hm < 930 else 0.55 if hm < 1130 else 0.85
         target_threshold = vol_base * vol_weight
 
-        # 全場掃描
+        # D. 全場掃描
         data_list = []
         contracts = st.session_state.all_contracts
-        progress_bar = st.progress(0, text="同步市場數據中...")
+        progress_bar = st.progress(0, text="市場動能分析中...")
         
         batch_size = 500
         for i in range(0, len(contracts), batch_size):
@@ -130,29 +137,26 @@ if st.session_state.running:
                 code = s.code; ref = st.session_state.ref_map.get(code, 0)
                 if not code or s.close <= 0 or ref <= 0 or s.yesterday_volume <= 0: continue
                 
-                # --- 核心過濾邏輯 ---
-                if s.yesterday_volume < prev_vol_min: continue
-                if s.total_volume < vol_now_min: continue
+                # --- 核心過濾器 ---
+                if s.yesterday_volume < prev_vol_min or s.total_volume < vol_now_min: continue
                 
+                # 基準總量比例分析
                 ratio = s.total_volume / s.yesterday_volume
                 if ratio < target_threshold: continue
                 
                 chg = round(((s.close - ref) / ref * 100), 2)
                 if not (min_chg <= chg <= 9.8): continue
                 
-                # 動能判斷 (含安全檢查)
+                # 1分動能
                 vol_diff = s.total_volume - st.session_state.last_total_vol_map.get(code, s.total_volume)
                 st.session_state.last_total_vol_map[code] = s.total_volume
                 
-                # 排除第一輪抓取(vol_diff會是0)
-                if vol_diff <= 0: continue 
-
-                min_vol_pct = (vol_diff / s.total_volume) * 100
+                # 動能判斷 (門檻達標或瞬間 50 張)
+                min_vol_pct = (vol_diff / s.total_volume) * 100 if s.total_volume > 0 else 0
                 if not (min_vol_pct >= momentum_thr or vol_diff >= 50): continue
                 
                 # 回撤與乖離
                 if s.high > 0 and ((s.high - s.close) / s.high * 100) > back_limit: continue
-                
                 vwap = (s.amount / s.total_volume) if s.total_volume > 0 else s.close
                 vwap_dist = ((s.close - vwap) / vwap * 100)
                 
@@ -165,7 +169,7 @@ if st.session_state.running:
                 
                 if hits >= 10 and code not in st.session_state.reported_codes:
                     if st.session_state.market_safe and vwap_dist <= vwap_dist_thr:
-                        send_winner_alert(item)
+                        send_winner_alert(item, DISCORD_URL)
                         st.session_state.reported_codes.add(code)
 
         progress_bar.empty()
