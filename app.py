@@ -24,25 +24,29 @@ def init_states():
         if k not in st.session_state: st.session_state[k] = v
 
 # ==========================================
-# 2. Discord 通報
+# 2. Discord 通報功能 (排版強化)
 # ==========================================
-def send_winner_alert(item, url):
-    msg = f"### 🚀 財神降臨！發財電報\n🔥 **{item['code']} {item['name']}**\n"
+def send_winner_alert(item, url, is_test=False):
+    header = "🧪 測試發報" if is_test else "🚀 財神降臨！發財電報"
+    msg = f"### {header}\n"
+    msg += f"🔥 **{item['code']} {item['name']}**\n"
     msg += f"```yaml\n"
     msg += f"{'現價':<6}: {item['price']}\n"
     msg += f"{'漲幅':<6}: {item['chg']}%\n"
-    content_txt = f"{'停利價':<5}: {item['tp']}\n"
-    content_txt += f"{'停損價':<5}: {item['sl']}\n"
-    content_txt += f"{'偵測次數':<4}: {item['hit']} 次\n"
-    msg += content_txt
+    msg += f"{'停利價':<5}: {item['tp']}\n"
+    msg += f"{'停損價':<5}: {item['sl']}\n"
+    msg += f"{'偵測次數':<4}: {item['hit']} 次\n"
     msg += "```"
-    try: requests.post(url, json={"content": msg}, timeout=5)
-    except: pass
+    try:
+        requests.post(url, json={"content": msg}, timeout=5)
+        return True
+    except:
+        return False
 
 # ==========================================
-# 3. 主介面
+# 3. 主介面與側邊欄
 # ==========================================
-st.set_page_config(page_title="當沖雷達-結構修正版", layout="wide")
+st.set_page_config(page_title="當沖雷達-終極修復版", layout="wide")
 init_states()
 
 with st.sidebar:
@@ -59,6 +63,18 @@ with st.sidebar:
     w_vol = st.number_input("動態量權重", 1.0)
     b_lim = st.number_input("回徹限制%", 1.2)
     dist_thr = st.number_input("乖離限制%", 3.5)
+
+    st.divider()
+    # 【加回測試發報功能】
+    if st.button("🚀 測試 Discord 通報", use_container_width=True):
+        test_item = {
+            "code": "2330", "name": "台積電", "price": 1000.0, "chg": 5.0, 
+            "tp": 1025.0, "sl": 985.0, "hit": 10
+        }
+        if send_winner_alert(test_item, URL, is_test=True):
+            st.toast("✅ 測試通報已成功送出！")
+        else:
+            st.error("❌ 送出失敗，請檢查 Webhook URL")
 
     if not st.session_state.running:
         if st.button("▶ 啟動", type="primary", use_container_width=True):
@@ -77,9 +93,9 @@ if st.session_state.running:
     try:
         api = get_shioaji_api(K1, K2)
         
-        # A. 合約下載保護 (解決 Indices 報錯)
+        # A. 合約下載保護 (解決 Indices 屬性報錯)
         if not st.session_state.all_contracts:
-            with st.spinner("同步市場資訊與指數合約..."):
+            with st.spinner("同步市場資訊中..."):
                 tse_list = list(api.Contracts.Stocks.TSE) if api.Contracts.Stocks.TSE else []
                 otc_list = list(api.Contracts.Stocks.OTC) if api.Contracts.Stocks.OTC else []
                 raw = [c for c in (tse_list + otc_list) if len(c.code) == 4]
@@ -87,18 +103,11 @@ if st.session_state.running:
                 st.session_state.name_map = {c.code: c.name for c in raw}
                 st.session_state.all_contracts = [c for c in raw if c.code in st.session_state.ref_map]
                 
-                # 修正：嘗試多種路徑抓取指數
-                m_list = []
-                try:
-                    # 路徑 1: Indices 屬性
-                    m_list = [api.Contracts.Indices.TSE["001"], api.Contracts.Indices.OTC["OTC"]]
+                # 指數抓取路徑容錯
+                try: m_list = [api.Contracts.Indices.TSE["001"], api.Contracts.Indices.OTC["OTC"]]
                 except:
-                    try:
-                        # 路徑 2: 部分版本將指數放在 Stocks 下
-                        m_list = [api.Contracts.Stocks.TSE["001"], api.Contracts.Stocks.OTC["OTC"]]
-                    except:
-                        # 路徑 3: 備案 - 權值股參考 (2330 為大盤參考, 6488 為櫃買參考)
-                        m_list = [api.Contracts.Stocks.TSE["2330"], api.Contracts.Stocks.OTC["6488"]]
+                    try: m_list = [api.Contracts.Stocks.TSE["001"], api.Contracts.Stocks.OTC["OTC"]]
+                    except: m_list = [api.Contracts.Stocks.TSE["2330"], api.Contracts.Stocks.OTC["6488"]]
                 st.session_state.m_contracts = m_list
 
         # B. 大盤監控
@@ -134,12 +143,14 @@ if st.session_state.running:
                 code = s.code; ref = st.session_state.ref_map.get(code, 0)
                 if not code or s.close <= 0 or ref <= 0: continue
                 if s.yesterday_volume < v_prev or s.total_volume < v_now: continue
+                
                 ratio = s.total_volume / s.yesterday_volume
                 if ratio < thr: continue
+                
                 chg = round(((s.close - ref) / ref * 100), 2)
                 if not (min_c <= chg <= 9.8): continue
                 
-                # 動能
+                # 1分動能
                 last_v = st.session_state.last_total_vol_map.get(code, s.total_volume)
                 v_diff = s.total_volume - last_v
                 st.session_state.last_total_vol_map[code] = s.total_volume
@@ -147,12 +158,12 @@ if st.session_state.running:
                 v_pct = (v_diff / s.total_volume) * 100
                 if not (v_pct >= m_thr or v_diff >= 50): continue
                 
-                # 回撤/乖離
+                # 回撤與乖離
                 if s.high > 0 and ((s.high - s.close) / s.high * 100) > b_lim: continue
                 vwap = (s.amount / s.total_volume) if s.total_volume > 0 else s.close
                 dist = ((s.close - vwap) / vwap * 100)
                 
-                # Hits
+                # Hits 紀錄
                 hist_trigger = st.session_state.trigger_history.get(code, [])
                 st.session_state.trigger_history[code] = [t for t in hist_trigger if t > now - timedelta(minutes=10)] + [now]
                 h = len(st.session_state.trigger_history[code])
