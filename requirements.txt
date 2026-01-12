@@ -1,0 +1,6 @@
+streamlit
+shioaji
+pandas
+requests
+Pillow
+openpyxl
