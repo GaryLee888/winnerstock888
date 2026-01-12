@@ -39,7 +39,7 @@ if "market_msg" not in st.session_state:
 # ==========================================
 def get_fonts():
     base_path = os.path.dirname(__file__)
-    f_path = os.path.join(base_path, "msjhbd.ttc") 
+    f_path = os.path.join(base_path, "font.ttf") 
     
     try:
         if os.path.exists(f_path):
@@ -229,3 +229,4 @@ if st.session_state.running:
     st.rerun()
 else:
     st.warning("👈 監控已停止，請啟動。")
+
