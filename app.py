@@ -3,7 +3,7 @@ import shioaji as sj
 import pandas as pd
 import time
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # ==========================================
 # 1. 強力緩存連線
@@ -24,7 +24,7 @@ def init_states():
         if k not in st.session_state: st.session_state[k] = v
 
 # ==========================================
-# 2. Discord 通報功能 (排版強化)
+# 2. Discord 通報 (極簡對齊)
 # ==========================================
 def send_winner_alert(item, url, is_test=False):
     header = "🧪 測試發報" if is_test else "🚀 財神降臨！發財電報"
@@ -34,9 +34,8 @@ def send_winner_alert(item, url, is_test=False):
     msg += f"{'現價':<6}: {item['price']}\n"
     msg += f"{'漲幅':<6}: {item['chg']}%\n"
     msg += f"{'停利價':<5}: {item['tp']}\n"
-    content_txt = f"{'停損價':<5}: {item['sl']}\n"
-    content_txt += f"{'偵測次數':<4}: {item['hit']} 次\n"
-    msg += content_txt
+    msg += f"{'停損價':<5}: {item['sl']}\n"
+    msg += f"{'偵測次數':<4}: {item['hit']} 次\n"
     msg += "```"
     try:
         requests.post(url, json={"content": msg}, timeout=5)
@@ -45,9 +44,9 @@ def send_winner_alert(item, url, is_test=False):
         return False
 
 # ==========================================
-# 3. 主介面與側邊欄
+# 3. 主介面
 # ==========================================
-st.set_page_config(page_title="當沖雷達-終極修復版", layout="wide")
+st.set_page_config(page_title="當沖雷達-終極修正版", layout="wide")
 init_states()
 
 with st.sidebar:
@@ -68,10 +67,7 @@ with st.sidebar:
     st.divider()
     if st.button("🚀 測試 Discord 通報", use_container_width=True):
         test_item = {"code": "2330", "name": "台積電", "price": 1000.0, "chg": 5.0, "tp": 1025.0, "sl": 985.0, "hit": 10}
-        if send_winner_alert(test_item, URL, is_test=True):
-            st.toast("✅ 測試通報已成功送出！")
-        else:
-            st.error("❌ 送出失敗，請檢查 Webhook URL")
+        send_winner_alert(test_item, URL, is_test=True)
 
     if not st.session_state.running:
         if st.button("▶ 啟動雷達", type="primary", use_container_width=True):
@@ -83,10 +79,12 @@ with st.sidebar:
             st.rerun()
 
 # ==========================================
-# 4. 監控邏輯 (含 BUG 修正與優化)
+# 4. 監控邏輯 (解決時區與大盤判斷 BUG)
 # ==========================================
 if st.session_state.running:
-    now = datetime.now()
+    # 修正：強制使用台灣時區 (UTC+8)
+    now = datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None)
+    
     try:
         api = get_shioaji_api(K1, K2)
         
@@ -106,26 +104,25 @@ if st.session_state.running:
                     except: m_list = [api.Contracts.Stocks.TSE["2330"], api.Contracts.Stocks.OTC["6488"]]
                 st.session_state.m_contracts = m_list
 
-        # B. 大盤監控 (修正重複數據 BUG)
+        # B. 大盤監控 (修正早盤數據不足 BUG)
         try:
             m_snaps = api.snapshots(st.session_state.m_contracts)
             danger = False
             for s in m_snaps:
                 if s.close <= 0: continue 
                 hist = st.session_state.market_history.get(s.code, [])
-                # 只有當最後一筆價格不同時才記錄，避免列表爆炸
                 if not hist or hist[-1][1] != s.close:
                     hist.append((now, s.close))
-                # 保留最近 5 分鐘
                 st.session_state.market_history[s.code] = [(t, p) for t, p in hist if t > now - timedelta(minutes=5)]
                 
                 past = [p for t, p in st.session_state.market_history[s.code] if t < now - timedelta(minutes=2)]
-                if past and (s.close - past[-1]) / past[-1] * 100 < -0.15: danger = True
+                if len(past) > 0: # 修正處：檢查 past 是否有值
+                    if (s.close - past[-1]) / past[-1] * 100 < -0.15: danger = True
             st.session_state.market_safe = not danger
         except: 
             st.session_state.market_safe = True 
 
-        # C. 量能基準分析
+        # C. 量能基準分析 (移植核心)
         hm = now.hour * 100 + now.minute
         v_base = 0.25 if hm < 930 else 0.55 if hm < 1130 else 0.85
         thr = v_base * w_vol
@@ -133,12 +130,10 @@ if st.session_state.running:
         # D. 市場掃描
         res_list = []
         conts = st.session_state.all_contracts
-        p_bar = st.progress(0, text=f"掃描中... 基準係數: {v_base}")
+        p_bar = st.progress(0, text=f"掃描中... 台灣時間: {now.strftime('%H:%M:%S')}")
         
-        # 優化掃描：分大組處理以減少 UI 刷新頻率
         batch_size = 500
         for i in range(0, len(conts), batch_size):
-            # 每掃描一大群標的更新一次進度，防止 UI 卡頓
             p_bar.progress(min((i + batch_size) / len(conts), 1.0))
             snaps = api.snapshots(conts[i : i + batch_size])
             
@@ -146,7 +141,7 @@ if st.session_state.running:
                 code = s.code; ref = st.session_state.ref_map.get(code, 0)
                 if not code or s.close <= 0 or ref <= 0: continue
                 
-                # 基準總量分析 (移植核心)
+                # 基準總量分析
                 if s.yesterday_volume < v_prev or s.total_volume < v_now: continue
                 ratio = s.total_volume / s.yesterday_volume
                 if ratio < thr: continue
@@ -158,6 +153,7 @@ if st.session_state.running:
                 last_v = st.session_state.last_total_vol_map.get(code, s.total_volume)
                 v_diff = s.total_volume - last_v
                 st.session_state.last_total_vol_map[code] = s.total_volume
+                
                 if v_diff <= 0: continue 
                 v_pct = (v_diff / s.total_volume) * 100
                 if not (v_pct >= m_thr or v_diff >= 50): continue
@@ -181,10 +177,6 @@ if st.session_state.running:
                         st.session_state.reported_codes.add(code)
 
         p_bar.empty()
-        # 定期清理 trigger_history 避免記憶體過大
-        if len(st.session_state.trigger_history) > 2000:
-            st.session_state.trigger_history = {k: v for k, v in st.session_state.trigger_history.items() if v[-1] > now - timedelta(minutes=15)}
-
         if res_list:
             st.dataframe(pd.DataFrame(res_list).sort_values("hit", ascending=False), use_container_width=True)
         time.sleep(scan_int)
