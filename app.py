@@ -9,7 +9,7 @@ from PIL import Image, ImageDraw, ImageFont
 import io
 
 # ==========================================
-# 1. 核心設定
+# 1. 核心設定與初始化
 # ==========================================
 st.set_page_config(page_title="當沖雷達 - 終極修復版", layout="wide")
 
@@ -33,18 +33,19 @@ if "market_msg" not in st.session_state:
     st.session_state.market_msg = "等待數據..."
 
 # ==========================================
-# 2. 終極修復版：字體載入邏輯
+# 2. 安全字體載入函式 (修正 unknown file format)
 # ==========================================
 def get_fonts():
     base_path = os.path.dirname(__file__)
-    # 建議改用 .ttf 檔案，避免 .ttc 在 Linux 下的 unknown format 報錯
+    # 強烈建議使用 .ttf 檔案，避免 .ttc 格式在 Linux 下報錯
     f_path = os.path.join(base_path, "font.ttf") 
     
     try:
         if os.path.exists(f_path):
-            # 檢查檔案大小，若小於 100KB 可能是 Git LFS 指標檔，會導致報錯
-            if os.path.getsize(f_path) < 102400:
-                st.error(f"❌ 檔案大小異常 ({os.path.getsize(f_path)} bytes)，請確認是否為 LFS 連結而非真實字體檔。")
+            # 檔案完整性檢查：若小於 1MB，通常是上傳不完全的指標檔
+            if os.path.getsize(f_path) < 1048576:
+                st.error(f"❌ 字體檔大小異常 ({os.path.getsize(f_path)} bytes)，請確認是否完整上傳。")
+                return {k: ImageFont.load_default() for k in ['title', 'price', 'info', 'small', 'alert']}
             
             return {
                 'title': ImageFont.truetype(f_path, 44),
@@ -55,15 +56,13 @@ def get_fonts():
             }
         else:
             st.error(f"❌ 找不到字體檔：{f_path}")
-            default = ImageFont.load_default()
-            return {k: default for k in ['title', 'price', 'info', 'small', 'alert']}
+            return {k: ImageFont.load_default() for k in ['title', 'price', 'info', 'small', 'alert']}
     except Exception as e:
         st.error(f"❌ 字體載入失敗: {e}")
-        default = ImageFont.load_default()
-        return {k: default for k in ['title', 'price', 'info', 'small', 'alert']}
+        return {k: ImageFont.load_default() for k in ['title', 'price', 'info', 'small', 'alert']}
 
 # ==========================================
-# 3. 核心功能 (原版邏輯完全不動)
+# 3. 核心邏輯 (原版移植)
 # ==========================================
 def check_market_risk(api, market_contracts):
     try:
@@ -115,19 +114,23 @@ def send_winner_alert(item, is_test=False):
     finally: buf.close()
 
 # ==========================================
-# 4. UI 與 監控循環
+# 4. 介面控制欄
 # ==========================================
 with st.sidebar:
-    st.header("🎮 參數設定")
+    st.header("⚙️ 核心參數")
     scan_interval = st.slider("掃頻速度(秒)", 5, 60, 10)
     min_chg = st.number_input("漲幅下限%", value=2.5)
+    momentum_limit = st.number_input("1分動能% >", value=1.5)
     vol_weight = st.number_input("動態量權重", value=1.0)
-    vwap_dist_thr = st.number_input("均價乖離% <", value=3.5)
+    backtrack_limit = st.number_input("回撤限制%", value=1.2)
+    vwap_dist_limit = st.number_input("均價乖離% <", value=3.5)
+
     st.divider()
     if st.button("🚀 測試發報 (檢查中文圖片)", use_container_width=True):
-        test_item = {"code": "8888", "name": "測試成功", "price": 100.0, "chg": 5.0, "sl": 98.5, "tp": 102.5, "vwap_dist": 1.2, "cond": "🚀 系統測試", "hit": 3}
+        test_item = {"code": "8888", "name": "字體測試", "price": 100.0, "chg": 5.0, "sl": 98.5, "tp": 102.5, "vwap_dist": 1.2, "cond": "🚀 系統測試", "hit": 3}
         send_winner_alert(test_item, is_test=True)
         st.toast("已送出測試訊息")
+
     if not st.session_state.running:
         if st.button("▶ 啟動監控", type="primary", use_container_width=True):
             st.session_state.running = True
@@ -137,6 +140,9 @@ with st.sidebar:
             st.session_state.running = False
             st.rerun()
 
+# ==========================================
+# 5. 掃描循環 (保留原版篩選邏輯)
+# ==========================================
 if st.session_state.running:
     if "api" not in st.session_state:
         with st.spinner("API 初始化中..."):
@@ -153,7 +159,7 @@ if st.session_state.running:
 
     check_market_risk(st.session_state.api, st.session_state.m_contracts)
     m_color = "🔴" if not st.session_state.market_safe else "🟢"
-    st.info(f"{m_color} 環境: {st.session_state.market_msg} | 正在監控 {len(st.session_state.all_contracts)} 檔")
+    st.info(f"{m_color} 環境: {st.session_state.market_msg} | 正在掃描 {len(st.session_state.all_contracts)} 檔")
 
     now = datetime.now()
     hm = now.hour * 100 + now.minute
@@ -173,14 +179,19 @@ if st.session_state.running:
         
         vwap = (s.amount / s.total_volume) if s.total_volume > 0 else s.close
         vwap_dist = round(((s.close - vwap) / vwap * 100), 2)
+        
         vol_diff = s.total_volume - st.session_state.last_total_vol_map.get(code, s.total_volume)
         st.session_state.last_total_vol_map[code] = s.total_volume
         min_vol_pct = round((vol_diff / s.total_volume) * 100, 2) if s.total_volume > 0 else 0
         
-        if not ((min_vol_pct >= 1.5) or (vol_diff >= 50)): continue
+        # 核心判斷：1分動能或瞬間爆量
+        if not ((min_vol_pct >= momentum_limit) or (vol_diff >= 50)): continue
         
         ratio = round(s.total_volume / (s.yesterday_volume if s.yesterday_volume > 0 else 1), 2)
         if ratio < vol_threshold: continue
+        
+        daily_high = s.high if s.high > 0 else s.close
+        if ((daily_high - s.close) / daily_high * 100) > backtrack_limit: continue
         
         st.session_state.trigger_history[code] = [t for t in st.session_state.trigger_history.get(code, []) if t > now - timedelta(minutes=10)] + [now]
         hits = len(st.session_state.trigger_history[code])
@@ -191,11 +202,11 @@ if st.session_state.running:
         data_list.append(item)
         
         if hits >= 10 and code not in st.session_state.reported_codes:
-            if st.session_state.market_safe and vwap_dist <= vwap_dist_thr:
+            if st.session_state.market_safe and vwap_dist <= vwap_dist_limit:
                 item['cond'] = f"🔥 {cat}族群強勢" if cat_hits.get(cat, 0) >= 2 else "🚀 短線爆發"
                 send_winner_alert(item)
                 st.session_state.reported_codes.add(code)
-                st.toast(f"✅ 已發送：{code}")
+                st.toast(f"✅ 通報：{code}")
 
     if data_list:
         st.dataframe(pd.DataFrame(data_list).sort_values("觸發", ascending=False), use_container_width=True)
