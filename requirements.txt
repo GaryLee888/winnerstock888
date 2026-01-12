@@ -1,6 +1,6 @@
-streamlit
 shioaji
+streamlit
 pandas
 requests
-Pillow
-openpyxl
+plotly
+kaleido
