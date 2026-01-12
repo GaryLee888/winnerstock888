@@ -9,9 +9,9 @@ import io
 import plotly.graph_objects as go
 
 # ==========================================
-# 1. 核心設定與初始化 (100% 完整移植邏輯)
+# 1. 核心設定與初始化 (100% 完整移植原版邏輯)
 # ==========================================
-st.set_page_config(page_title="當沖雷達 - 終極穩定版", layout="wide")
+st.set_page_config(page_title="當沖雷達 - 終極修復版", layout="wide")
 
 API_KEY = st.secrets.get("API_KEY", "")
 SECRET_KEY = st.secrets.get("SECRET_KEY", "")
@@ -36,7 +36,7 @@ if "market_msg" not in st.session_state:
 # 2. Discord 發送邏輯 (改用 Plotly 表格，徹底避開字體報錯)
 # ==========================================
 def send_winner_alert(item, is_test=False):
-    # 建立一個 Plotly 表格圖，這不需要外部字體檔支援
+    # 建立 Plotly 表格圖，這在 Linux 環境不需要額外字體檔支援
     fig = go.Figure(data=[go.Table(
         header=dict(values=['<b>監控項目</b>', '<b>即時數據</b>'],
                     fill_color='#FFD700',
@@ -55,7 +55,7 @@ def send_winner_alert(item, is_test=False):
     
     fig.update_layout(width=500, height=450, margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor="#121317")
     
-    # 核心：透過 kaleido 將圖表轉為圖片，避開了系統對 .ttc 的依賴
+    # 核心：使用 kaleido 引擎將圖表轉為圖片位元組
     try:
         img_bytes = fig.to_image(format="png", engine="kaleido")
         buf = io.BytesIO(img_bytes)
@@ -66,10 +66,10 @@ def send_winner_alert(item, is_test=False):
         requests.post(DISCORD_WEBHOOK_URL, data={"content": content}, 
                       files={"file": (f"{item['code']}.png", buf, "image/png")}, timeout=10)
     except Exception as e:
-        st.error(f"圖片生成失敗 (請確認 requirements 包含 kaleido): {e}")
+        st.error(f"圖片生成失敗: {e}")
 
 # ==========================================
-# 3. 核心監控邏輯 (100% 完整移植您的篩選邏輯)
+# 3. 核心監控邏輯 (100% 完整移植您的篩選參數)
 # ==========================================
 def check_market_risk(api, market_contracts):
     try:
@@ -95,7 +95,7 @@ def check_market_risk(api, market_contracts):
     except: pass
 
 # ==========================================
-# 4. Streamlit UI
+# 4. Streamlit UI 
 # ==========================================
 with st.sidebar:
     st.header("🎮 監控參數設定")
@@ -138,7 +138,7 @@ if st.session_state.running:
 
     check_market_risk(st.session_state.api, st.session_state.m_contracts)
     m_color = "🔴" if not st.session_state.market_safe else "🟢"
-    st.info(f"{m_color} 環境: {st.session_state.market_msg} | 正在掃描 {len(st.session_state.all_contracts)} 檔")
+    st.info(f"{m_color} 環境: {st.session_state.market_msg} | 掃描檔數: {len(st.session_state.all_contracts)}")
 
     now = datetime.now(); hm = now.hour * 100 + now.minute
     vol_base = 0.25 if hm < 930 else 0.55 if hm < 1130 else 0.85
@@ -161,7 +161,6 @@ if st.session_state.running:
         st.session_state.last_total_vol_map[code] = s.total_volume
         min_vol_pct = round((vol_diff / s.total_volume) * 100, 2) if s.total_volume > 0 else 0
         
-        # 核心判斷：1分動能與瞬間爆量
         if not ((min_vol_pct >= momentum_thr) or (vol_diff >= 50)): continue
         
         ratio = round(s.total_volume / (s.yesterday_volume if s.yesterday_volume > 0 else 1), 2)
@@ -180,7 +179,7 @@ if st.session_state.running:
                 item['cond'] = f"🔥 {cat}族群強勢" if cat_hits.get(cat, 0) >= 2 else "🚀 短線爆發"
                 send_winner_alert(item)
                 st.session_state.reported_codes.add(code)
-                st.toast(f"✅ 通報：{code}")
+                st.toast(f"✅ 已通報：{code}")
 
     if data_list:
         st.dataframe(pd.DataFrame(data_list).sort_values("hit", ascending=False), use_container_width=True)
