@@ -4,21 +4,20 @@ import pandas as pd
 import time
 import requests
 import os
+import urllib.request
 from datetime import datetime, timedelta
 from PIL import Image, ImageDraw, ImageFont
 import io
 
 # ==========================================
-# 1. 初始化與 Secrets 讀取
+# 1. 核心設定與初始化
 # ==========================================
-st.set_page_config(page_title="當沖雷達 - 終極修復版", layout="wide")
+st.set_page_config(page_title="當沖雷達 - 自動字體修復版", layout="wide")
 
-# 建議在 Streamlit Cloud Settings -> Secrets 填寫
 API_KEY = st.secrets.get("API_KEY", "")
 SECRET_KEY = st.secrets.get("SECRET_KEY", "")
 DISCORD_WEBHOOK_URL = st.secrets.get("DISCORD_WEBHOOK_URL", "")
 
-# 狀態保持 (Session State)
 if "running" not in st.session_state:
     st.session_state.running = False
 if "reported_codes" not in st.session_state:
@@ -35,41 +34,35 @@ if "market_msg" not in st.session_state:
     st.session_state.market_msg = "等待數據..."
 
 # ==========================================
-# 2. 安全字體載入 (整合您的雙重檢查邏輯)
+# 2. 自動字體解決方案 (徹底解決相容性問題)
 # ==========================================
 def get_fonts():
-    base_path = os.path.dirname(__file__)
-    f_path = os.path.join(base_path, "msjhbd.ttc") 
+    # 改用思源黑體 (相容性最高)
+    font_filename = "NotoSansTC-Bold.otf"
+    font_url = "https://github.com/googlefonts/noto-cjk/raw/main/Sans/OTF/TraditionalChinese/NotoSansCJKtc-Bold.otf"
     
-    try:
-        if os.path.exists(f_path):
-            # 優先嘗試針對 Linux 環境的最安全寫法 (指定 index=0)
-            return {
-                'title': ImageFont.truetype(f_path, 44, index=0),
-                'price': ImageFont.truetype(f_path, 70, index=0),
-                'info': ImageFont.truetype(f_path, 26, index=0),
-                'small': ImageFont.truetype(f_path, 18, index=0),
-                'alert': ImageFont.truetype(f_path, 22, index=0)
-            }
-        else:
-            st.error(f"❌ 找不到字體檔：{f_path}")
-            return {k: ImageFont.load_default() for k in ['title', 'price', 'info', 'small', 'alert']}
-    except Exception as e:
-        # 如果 index=0 失敗，嘗試不帶 index 的寫法
+    if not os.path.exists(font_filename):
         try:
-            return {
-                'title': ImageFont.truetype(f_path, 44),
-                'price': ImageFont.truetype(f_path, 70),
-                'info': ImageFont.truetype(f_path, 26),
-                'small': ImageFont.truetype(f_path, 18),
-                'alert': ImageFont.truetype(f_path, 22)
-            }
-        except Exception as e2:
-            st.error(f"❌ 字體格式完全不相容: {e2}。Discord 圖片將無中文。")
+            with st.spinner("首次執行，正在安裝中文字體..."):
+                urllib.request.urlretrieve(font_url, font_filename)
+        except Exception as e:
+            st.error(f"字體下載失敗: {e}")
             return {k: ImageFont.load_default() for k in ['title', 'price', 'info', 'small', 'alert']}
 
+    try:
+        return {
+            'title': ImageFont.truetype(font_filename, 44),
+            'price': ImageFont.truetype(font_filename, 70),
+            'info': ImageFont.truetype(font_filename, 26),
+            'small': ImageFont.truetype(font_filename, 18),
+            'alert': ImageFont.truetype(font_filename, 22)
+        }
+    except Exception as e:
+        st.error(f"字體載入失敗: {e}")
+        return {k: ImageFont.load_default() for k in ['title', 'price', 'info', 'small', 'alert']}
+
 # ==========================================
-# 3. 核心功能 (原版大盤檢查與發報邏輯完全移植)
+# 3. 核心功能 (原版大盤檢查與發報邏輯)
 # ==========================================
 def check_market_risk(api, market_contracts):
     try:
@@ -125,27 +118,25 @@ def send_winner_alert(item, is_test=False):
     finally: buf.close()
 
 # ==========================================
-# 4. Streamlit 介面與參數 (與原版 UI 對應)
+# 4. Streamlit UI
 # ==========================================
 with st.sidebar:
     st.header("⚙️ 核心監控參數")
     scan_interval = st.slider("掃頻速度(秒)", 5, 60, 10)
     min_chg = st.number_input("漲幅下限%", value=2.5)
-    prev_vol_min = st.number_input("昨日交易量 >", value=3000)
     momentum_thr = st.number_input("1分動能% >", value=1.5)
     vol_weight = st.number_input("動態量權重", value=1.0)
     back_limit = st.number_input("回撤限制%", value=1.2)
-    vol_now_min = st.number_input("成交張數 >", value=1000)
     vwap_dist_thr = st.number_input("均價乖離% <", value=3.5)
 
     st.divider()
     if st.button("🚀 測試發報 (檢查中文圖片)", use_container_width=True):
-        test_item = {"code": "8888", "name": "字體測試成功", "price": 100.0, "chg": 5.0, "sl": 98.5, "tp": 102.5, "vwap_dist": 1.2, "cond": "🚀 系統測試", "hit": 3}
+        test_item = {"code": "8888", "name": "字體自動修復成功", "price": 100.0, "chg": 5.0, "sl": 98.5, "tp": 102.5, "vwap_dist": 1.2, "cond": "🚀 系統測試", "hit": 3}
         send_winner_alert(test_item, is_test=True)
-        st.toast("測試訊號已送出，請檢查 Discord")
+        st.toast("已送出測試訊息")
 
     if not st.session_state.running:
-        if st.button("▶ 啟動雷達監控", type="primary", use_container_width=True):
+        if st.button("▶ 啟動監控", type="primary", use_container_width=True):
             st.session_state.running = True
             st.rerun()
     else:
@@ -154,31 +145,26 @@ with st.sidebar:
             st.rerun()
 
 # ==========================================
-# 5. 掃描執行 (原版邏輯不動)
+# 5. 主循環
 # ==========================================
 if st.session_state.running:
     if "api" not in st.session_state:
-        with st.spinner("Shioaji API 登入中..."):
-            api = sj.Shioaji()
-            api.login(API_KEY, SECRET_KEY)
-            # 完整載入股票合約
-            raw = [c for m in [api.Contracts.Stocks.TSE, api.Contracts.Stocks.OTC] for c in m if len(c.code) == 4]
-            st.session_state.ref_map = {c.code: float(c.reference) for c in raw if c.reference}
-            st.session_state.name_map = {c.code: c.name for c in raw}
-            st.session_state.cat_map = {c.code: c.category for c in raw}
-            st.session_state.all_contracts = [c for c in raw if c.code in st.session_state.ref_map]
-            try:
-                st.session_state.m_contracts = [api.Contracts.Indices.TSE["001"], api.Contracts.Indices.OTC["OTC"]]
-            except:
-                st.session_state.m_contracts = [api.Contracts.Stocks.TSE["001"], api.Contracts.Stocks.OTC["OTC"]]
-            st.session_state.api = api
+        api = sj.Shioaji()
+        api.login(API_KEY, SECRET_KEY)
+        raw = [c for m in [api.Contracts.Stocks.TSE, api.Contracts.Stocks.OTC] for c in m if len(c.code) == 4]
+        st.session_state.ref_map = {c.code: float(c.reference) for c in raw if c.reference}
+        st.session_state.name_map = {c.code: c.name for c in raw}
+        st.session_state.cat_map = {c.code: c.category for c in raw}
+        st.session_state.all_contracts = [c for c in raw if c.code in st.session_state.ref_map]
+        try: st.session_state.m_contracts = [api.Contracts.Indices.TSE["001"], api.Contracts.Indices.OTC["OTC"]]
+        except: st.session_state.m_contracts = [api.Contracts.Stocks.TSE["001"], api.Contracts.Stocks.OTC["OTC"]]
+        st.session_state.api = api
 
     check_market_risk(st.session_state.api, st.session_state.m_contracts)
     m_color = "🔴" if not st.session_state.market_safe else "🟢"
-    st.info(f"{m_color} 環境: {st.session_state.market_msg} | 正在掃描 {len(st.session_state.all_contracts)} 檔")
+    st.info(f"{m_color} 環境: {st.session_state.market_msg}")
 
-    now = datetime.now()
-    hm = now.hour * 100 + now.minute
+    now = datetime.now(); hm = now.hour * 100 + now.minute
     vol_base = 0.25 if hm < 930 else 0.55 if hm < 1130 else 0.85
     vol_threshold = vol_base * vol_weight
     
@@ -187,29 +173,22 @@ if st.session_state.running:
     
     for s in snaps:
         code = s.code; ref = st.session_state.ref_map.get(code, 0)
-        if not code or s.close <= 0 or ref <= 0 or s.total_volume < vol_now_min: continue
+        if not code or s.close <= 0 or ref <= 0: continue
         
         chg = round(((s.close - ref) / ref * 100), 2)
         if not (min_chg <= chg <= 9.8): continue
         
-        # 1分動能與量增計算
+        vwap = (s.amount / s.total_volume) if s.total_volume > 0 else s.close
+        vwap_dist = round(((s.close - vwap) / vwap * 100), 2)
+        
         vol_diff = s.total_volume - st.session_state.last_total_vol_map.get(code, s.total_volume)
         st.session_state.last_total_vol_map[code] = s.total_volume
         min_vol_pct = round((vol_diff / s.total_volume) * 100, 2) if s.total_volume > 0 else 0
         
-        # 動能條件 (百分比達標 OR 瞬間 50 張)
-        momentum_ok = (min_vol_pct >= momentum_thr) or (vol_diff >= 50)
-        if not momentum_ok: continue
+        if not ((min_vol_pct >= momentum_thr) or (vol_diff >= 50)): continue
         
         ratio = round(s.total_volume / (s.yesterday_volume if s.yesterday_volume > 0 else 1), 2)
         if ratio < vol_threshold: continue
-        
-        daily_high = s.high if s.high > 0 else s.close
-        if ((daily_high - s.close) / daily_high * 100) > back_limit: continue
-        
-        # 統計資訊
-        vwap = (s.amount / s.total_volume) if s.total_volume > 0 else s.close
-        vwap_dist = round(((s.close - vwap) / vwap * 100), 2)
         
         st.session_state.trigger_history[code] = [t for t in st.session_state.trigger_history.get(code, []) if t > now - timedelta(minutes=10)] + [now]
         hits = len(st.session_state.trigger_history[code])
@@ -224,14 +203,10 @@ if st.session_state.running:
                 item['cond'] = f"🔥 {cat}族群強勢" if cat_hits.get(cat, 0) >= 2 else "🚀 短線爆發"
                 send_winner_alert(item)
                 st.session_state.reported_codes.add(code)
-                st.toast(f"✅ 通報成功: {code} {item['名稱']}")
+                st.toast(f"✅ 通報成功: {code}")
 
     if data_list:
-        df_display = pd.DataFrame(data_list).sort_values("觸發", ascending=False)
-        st.dataframe(df_display, use_container_width=True, height=600)
+        st.dataframe(pd.DataFrame(data_list).sort_values("觸發", ascending=False), use_container_width=True)
     
     time.sleep(scan_interval)
     st.rerun()
-
-else:
-    st.warning("👈 監控已停止，請點擊「啟動雷達監控」按鈕。")
