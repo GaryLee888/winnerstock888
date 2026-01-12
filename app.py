@@ -39,7 +39,7 @@ if "market_msg" not in st.session_state:
 # ==========================================
 def get_fonts():
     base_path = os.path.dirname(__file__)
-    f_path = os.path.join(base_path, "font.ttf") 
+    f_path = os.path.join(base_path, "msjhbd.ttc") 
     
     try:
         if os.path.exists(f_path):
@@ -64,12 +64,12 @@ def get_fonts():
                 'small': ImageFont.truetype(f_path, 18),
                 'alert': ImageFont.truetype(f_path, 22)
             }
-        except:
-            st.error(f"❌ 字體格式完全不相容: {e}。Discord 圖片將無中文。")
+        except Exception as e2:
+            st.error(f"❌ 字體格式完全不相容: {e2}。Discord 圖片將無中文。")
             return {k: ImageFont.load_default() for k in ['title', 'price', 'info', 'small', 'alert']}
 
 # ==========================================
-# 3. 核心功能 (原版大盤檢查與發報邏輯)
+# 3. 核心功能 (原版大盤檢查與發報邏輯完全移植)
 # ==========================================
 def check_market_risk(api, market_contracts):
     try:
@@ -125,7 +125,7 @@ def send_winner_alert(item, is_test=False):
     finally: buf.close()
 
 # ==========================================
-# 4. Streamlit 介面
+# 4. Streamlit 介面與參數 (與原版 UI 對應)
 # ==========================================
 with st.sidebar:
     st.header("⚙️ 核心監控參數")
@@ -142,7 +142,7 @@ with st.sidebar:
     if st.button("🚀 測試發報 (檢查中文圖片)", use_container_width=True):
         test_item = {"code": "8888", "name": "字體測試成功", "price": 100.0, "chg": 5.0, "sl": 98.5, "tp": 102.5, "vwap_dist": 1.2, "cond": "🚀 系統測試", "hit": 3}
         send_winner_alert(test_item, is_test=True)
-        st.toast("測試訊號已送出")
+        st.toast("測試訊號已送出，請檢查 Discord")
 
     if not st.session_state.running:
         if st.button("▶ 啟動雷達監控", type="primary", use_container_width=True):
@@ -158,16 +158,19 @@ with st.sidebar:
 # ==========================================
 if st.session_state.running:
     if "api" not in st.session_state:
-        with st.spinner("API 登入中..."):
+        with st.spinner("Shioaji API 登入中..."):
             api = sj.Shioaji()
             api.login(API_KEY, SECRET_KEY)
+            # 完整載入股票合約
             raw = [c for m in [api.Contracts.Stocks.TSE, api.Contracts.Stocks.OTC] for c in m if len(c.code) == 4]
             st.session_state.ref_map = {c.code: float(c.reference) for c in raw if c.reference}
             st.session_state.name_map = {c.code: c.name for c in raw}
             st.session_state.cat_map = {c.code: c.category for c in raw}
             st.session_state.all_contracts = [c for c in raw if c.code in st.session_state.ref_map]
-            try: st.session_state.m_contracts = [api.Contracts.Indices.TSE["001"], api.Contracts.Indices.OTC["OTC"]]
-            except: st.session_state.m_contracts = [api.Contracts.Stocks.TSE["001"], api.Contracts.Stocks.OTC["OTC"]]
+            try:
+                st.session_state.m_contracts = [api.Contracts.Indices.TSE["001"], api.Contracts.Indices.OTC["OTC"]]
+            except:
+                st.session_state.m_contracts = [api.Contracts.Stocks.TSE["001"], api.Contracts.Stocks.OTC["OTC"]]
             st.session_state.api = api
 
     check_market_risk(st.session_state.api, st.session_state.m_contracts)
@@ -189,11 +192,12 @@ if st.session_state.running:
         chg = round(((s.close - ref) / ref * 100), 2)
         if not (min_chg <= chg <= 9.8): continue
         
-        # 1分動能與量增
+        # 1分動能與量增計算
         vol_diff = s.total_volume - st.session_state.last_total_vol_map.get(code, s.total_volume)
         st.session_state.last_total_vol_map[code] = s.total_volume
         min_vol_pct = round((vol_diff / s.total_volume) * 100, 2) if s.total_volume > 0 else 0
         
+        # 動能條件 (百分比達標 OR 瞬間 50 張)
         momentum_ok = (min_vol_pct >= momentum_thr) or (vol_diff >= 50)
         if not momentum_ok: continue
         
@@ -220,13 +224,14 @@ if st.session_state.running:
                 item['cond'] = f"🔥 {cat}族群強勢" if cat_hits.get(cat, 0) >= 2 else "🚀 短線爆發"
                 send_winner_alert(item)
                 st.session_state.reported_codes.add(code)
-                st.toast(f"✅ 通報：{code}")
+                st.toast(f"✅ 通報成功: {code} {item['名稱']}")
 
     if data_list:
-        st.dataframe(pd.DataFrame(data_list).sort_values("觸發", ascending=False), use_container_width=True, height=600)
+        df_display = pd.DataFrame(data_list).sort_values("觸發", ascending=False)
+        st.dataframe(df_display, use_container_width=True, height=600)
     
     time.sleep(scan_interval)
     st.rerun()
-else:
-    st.warning("👈 監控已停止，請啟動。")
 
+else:
+    st.warning("👈 監控已停止，請點擊「啟動雷達監控」按鈕。")
