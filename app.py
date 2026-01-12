@@ -11,12 +11,13 @@ import io
 # ==========================================
 # 1. 核心設定與初始化
 # ==========================================
-st.set_page_config(page_title="當沖雷達 - 終極修復版", layout="wide")
+st.set_page_config(page_title="當沖雷達 - 終極移植修復版", layout="wide")
 
 API_KEY = st.secrets.get("API_KEY", "")
 SECRET_KEY = st.secrets.get("SECRET_KEY", "")
 DISCORD_WEBHOOK_URL = st.secrets.get("DISCORD_WEBHOOK_URL", "")
 
+# 狀態保持 (Session State)
 if "running" not in st.session_state:
     st.session_state.running = False
 if "reported_codes" not in st.session_state:
@@ -33,18 +34,18 @@ if "market_msg" not in st.session_state:
     st.session_state.market_msg = "等待數據..."
 
 # ==========================================
-# 2. 安全字體載入函式 (修正 unknown file format)
+# 2. 字體載入邏輯 (修正 Unknown Format 關鍵)
 # ==========================================
 def get_fonts():
     base_path = os.path.dirname(__file__)
-    # 強烈建議使用 .ttf 檔案，避免 .ttc 格式在 Linux 下報錯
+    # 使用 .ttf 格式以獲得最高相容性
     f_path = os.path.join(base_path, "font.ttf") 
     
     try:
         if os.path.exists(f_path):
-            # 檔案完整性檢查：若小於 1MB，通常是上傳不完全的指標檔
-            if os.path.getsize(f_path) < 1048576:
-                st.error(f"❌ 字體檔大小異常 ({os.path.getsize(f_path)} bytes)，請確認是否完整上傳。")
+            # 檔案大小安全檢查 (防止 LFS 指標檔報錯)
+            if os.path.getsize(f_path) < 500000:
+                st.error(f"⚠️ 字體檔損壞或過小 ({os.path.getsize(f_path)} bytes)，請重新上傳真實的 .ttf 檔")
                 return {k: ImageFont.load_default() for k in ['title', 'price', 'info', 'small', 'alert']}
             
             return {
@@ -58,11 +59,11 @@ def get_fonts():
             st.error(f"❌ 找不到字體檔：{f_path}")
             return {k: ImageFont.load_default() for k in ['title', 'price', 'info', 'small', 'alert']}
     except Exception as e:
-        st.error(f"❌ 字體載入失敗: {e}")
+        st.error(f"❌ 字體格式讀取失敗: {e}")
         return {k: ImageFont.load_default() for k in ['title', 'price', 'info', 'small', 'alert']}
 
 # ==========================================
-# 3. 核心邏輯 (原版移植)
+# 3. 核心功能 (原版邏輯完全移植)
 # ==========================================
 def check_market_risk(api, market_contracts):
     try:
@@ -114,22 +115,22 @@ def send_winner_alert(item, is_test=False):
     finally: buf.close()
 
 # ==========================================
-# 4. 介面控制欄
+# 4. 介面與控制
 # ==========================================
 with st.sidebar:
-    st.header("⚙️ 核心參數")
+    st.header("⚙️ 核心監控參數")
     scan_interval = st.slider("掃頻速度(秒)", 5, 60, 10)
     min_chg = st.number_input("漲幅下限%", value=2.5)
-    momentum_limit = st.number_input("1分動能% >", value=1.5)
+    momentum_thr = st.number_input("1分動能% >", value=1.5)
     vol_weight = st.number_input("動態量權重", value=1.0)
-    backtrack_limit = st.number_input("回撤限制%", value=1.2)
+    back_limit = st.number_input("回撤限制%", value=1.2)
     vwap_dist_limit = st.number_input("均價乖離% <", value=3.5)
 
     st.divider()
     if st.button("🚀 測試發報 (檢查中文圖片)", use_container_width=True):
-        test_item = {"code": "8888", "name": "字體測試", "price": 100.0, "chg": 5.0, "sl": 98.5, "tp": 102.5, "vwap_dist": 1.2, "cond": "🚀 系統測試", "hit": 3}
+        test_item = {"code": "8888", "name": "測試成功", "price": 100.0, "chg": 5.0, "sl": 98.5, "tp": 102.5, "vwap_dist": 1.2, "cond": "🚀 系統測試", "hit": 3}
         send_winner_alert(test_item, is_test=True)
-        st.toast("已送出測試訊息")
+        st.toast("已送出測試訊號")
 
     if not st.session_state.running:
         if st.button("▶ 啟動監控", type="primary", use_container_width=True):
@@ -141,28 +142,26 @@ with st.sidebar:
             st.rerun()
 
 # ==========================================
-# 5. 掃描循環 (保留原版篩選邏輯)
+# 5. 主循環
 # ==========================================
 if st.session_state.running:
     if "api" not in st.session_state:
-        with st.spinner("API 初始化中..."):
-            api = sj.Shioaji()
-            api.login(API_KEY, SECRET_KEY)
-            raw = [c for m in [api.Contracts.Stocks.TSE, api.Contracts.Stocks.OTC] for c in m if len(c.code) == 4]
-            st.session_state.ref_map = {c.code: float(c.reference) for c in raw if c.reference}
-            st.session_state.name_map = {c.code: c.name for c in raw}
-            st.session_state.cat_map = {c.code: c.category for c in raw}
-            st.session_state.all_contracts = [c for c in raw if c.code in st.session_state.ref_map]
-            try: st.session_state.m_contracts = [api.Contracts.Indices.TSE["001"], api.Contracts.Indices.OTC["OTC"]]
-            except: st.session_state.m_contracts = [api.Contracts.Stocks.TSE["001"], api.Contracts.Stocks.OTC["OTC"]]
-            st.session_state.api = api
+        api = sj.Shioaji()
+        api.login(API_KEY, SECRET_KEY)
+        raw = [c for m in [api.Contracts.Stocks.TSE, api.Contracts.Stocks.OTC] for c in m if len(c.code) == 4]
+        st.session_state.ref_map = {c.code: float(c.reference) for c in raw if c.reference}
+        st.session_state.name_map = {c.code: c.name for c in raw}
+        st.session_state.cat_map = {c.code: c.category for c in raw}
+        st.session_state.all_contracts = [c for c in raw if c.code in st.session_state.ref_map]
+        try: st.session_state.m_contracts = [api.Contracts.Indices.TSE["001"], api.Contracts.Indices.OTC["OTC"]]
+        except: st.session_state.m_contracts = [api.Contracts.Stocks.TSE["001"], api.Contracts.Stocks.OTC["OTC"]]
+        st.session_state.api = api
 
     check_market_risk(st.session_state.api, st.session_state.m_contracts)
     m_color = "🔴" if not st.session_state.market_safe else "🟢"
     st.info(f"{m_color} 環境: {st.session_state.market_msg} | 正在掃描 {len(st.session_state.all_contracts)} 檔")
 
-    now = datetime.now()
-    hm = now.hour * 100 + now.minute
+    now = datetime.now(); hm = now.hour * 100 + now.minute
     vol_base = 0.25 if hm < 930 else 0.55 if hm < 1130 else 0.85
     vol_threshold = vol_base * vol_weight
     
@@ -170,8 +169,7 @@ if st.session_state.running:
     snaps = st.session_state.api.snapshots(st.session_state.all_contracts)
     
     for s in snaps:
-        code = s.code
-        ref = st.session_state.ref_map.get(code, 0)
+        code = s.code; ref = st.session_state.ref_map.get(code, 0)
         if not code or s.close <= 0 or ref <= 0: continue
         
         chg = round(((s.close - ref) / ref * 100), 2)
@@ -184,14 +182,14 @@ if st.session_state.running:
         st.session_state.last_total_vol_map[code] = s.total_volume
         min_vol_pct = round((vol_diff / s.total_volume) * 100, 2) if s.total_volume > 0 else 0
         
-        # 核心判斷：1分動能或瞬間爆量
-        if not ((min_vol_pct >= momentum_limit) or (vol_diff >= 50)): continue
+        # 核心判斷：1分動能 或 瞬間50張
+        if not ((min_vol_pct >= momentum_thr) or (vol_diff >= 50)): continue
         
         ratio = round(s.total_volume / (s.yesterday_volume if s.yesterday_volume > 0 else 1), 2)
         if ratio < vol_threshold: continue
         
         daily_high = s.high if s.high > 0 else s.close
-        if ((daily_high - s.close) / daily_high * 100) > backtrack_limit: continue
+        if ((daily_high - s.close) / daily_high * 100) > back_limit: continue
         
         st.session_state.trigger_history[code] = [t for t in st.session_state.trigger_history.get(code, []) if t > now - timedelta(minutes=10)] + [now]
         hits = len(st.session_state.trigger_history[code])
