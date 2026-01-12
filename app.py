@@ -12,7 +12,7 @@ import io
 # ==========================================
 # 1. 核心設定與初始化
 # ==========================================
-st.set_page_config(page_title="當沖雷達 - 自動字體修復版", layout="wide")
+st.set_page_config(page_title="當沖雷達 - 強制字體修復版", layout="wide")
 
 API_KEY = st.secrets.get("API_KEY", "")
 SECRET_KEY = st.secrets.get("SECRET_KEY", "")
@@ -34,32 +34,44 @@ if "market_msg" not in st.session_state:
     st.session_state.market_msg = "等待數據..."
 
 # ==========================================
-# 2. 自動字體解決方案 (徹底解決相容性問題)
+# 2. 強制字體下載邏輯 (解決 unknown format)
 # ==========================================
 def get_fonts():
-    # 改用思源黑體 (相容性最高)
     font_filename = "NotoSansTC-Bold.otf"
+    # 使用 Google 官方託管的思源黑體載點
     font_url = "https://github.com/googlefonts/noto-cjk/raw/main/Sans/OTF/TraditionalChinese/NotoSansCJKtc-Bold.otf"
     
+    # 檢查字體是否可用
+    need_download = False
     if not os.path.exists(font_filename):
+        need_download = True
+    else:
         try:
-            with st.spinner("首次執行，正在安裝中文字體..."):
-                urllib.request.urlretrieve(font_url, font_filename)
+            # 測試開啟檔案，失敗就代表檔案損壞
+            ImageFont.truetype(font_filename, 10)
+        except:
+            os.remove(font_filename)
+            need_download = True
+
+    if need_download:
+        try:
+            # 使用更顯眼的警告提示
+            st.warning("⚠️ 系統正在安裝中文字體，請稍候約 10 秒...")
+            urllib.request.urlretrieve(font_url, font_filename)
+            st.success("✅ 字體安裝完成！")
+            time.sleep(2)
+            st.rerun() # 下載完重新整理以讀取字體
         except Exception as e:
-            st.error(f"字體下載失敗: {e}")
+            st.error(f"字體下載失敗，請檢查網路連線: {e}")
             return {k: ImageFont.load_default() for k in ['title', 'price', 'info', 'small', 'alert']}
 
-    try:
-        return {
-            'title': ImageFont.truetype(font_filename, 44),
-            'price': ImageFont.truetype(font_filename, 70),
-            'info': ImageFont.truetype(font_filename, 26),
-            'small': ImageFont.truetype(font_filename, 18),
-            'alert': ImageFont.truetype(font_filename, 22)
-        }
-    except Exception as e:
-        st.error(f"字體載入失敗: {e}")
-        return {k: ImageFont.load_default() for k in ['title', 'price', 'info', 'small', 'alert']}
+    return {
+        'title': ImageFont.truetype(font_filename, 44),
+        'price': ImageFont.truetype(font_filename, 70),
+        'info': ImageFont.truetype(font_filename, 26),
+        'small': ImageFont.truetype(font_filename, 18),
+        'alert': ImageFont.truetype(font_filename, 22)
+    }
 
 # ==========================================
 # 3. 核心功能 (原版大盤檢查與發報邏輯)
@@ -127,13 +139,13 @@ with st.sidebar:
     momentum_thr = st.number_input("1分動能% >", value=1.5)
     vol_weight = st.number_input("動態量權重", value=1.0)
     back_limit = st.number_input("回撤限制%", value=1.2)
-    vwap_dist_thr = st.number_input("均價乖離% <", value=3.5)
+    vwap_dist_limit = st.number_input("均價乖離% <", value=3.5)
 
     st.divider()
     if st.button("🚀 測試發報 (檢查中文圖片)", use_container_width=True):
-        test_item = {"code": "8888", "name": "字體自動修復成功", "price": 100.0, "chg": 5.0, "sl": 98.5, "tp": 102.5, "vwap_dist": 1.2, "cond": "🚀 系統測試", "hit": 3}
+        test_item = {"code": "8888", "name": "字體修復成功", "price": 100.0, "chg": 5.0, "sl": 98.5, "tp": 102.5, "vwap_dist": 1.2, "cond": "🚀 系統測試", "hit": 3}
         send_winner_alert(test_item, is_test=True)
-        st.toast("已送出測試訊息")
+        st.toast("已送出測試訊息，請檢查 Discord")
 
     if not st.session_state.running:
         if st.button("▶ 啟動監控", type="primary", use_container_width=True):
@@ -145,7 +157,7 @@ with st.sidebar:
             st.rerun()
 
 # ==========================================
-# 5. 主循環
+# 5. 主循環 (完全移植原版篩選)
 # ==========================================
 if st.session_state.running:
     if "api" not in st.session_state:
@@ -190,6 +202,9 @@ if st.session_state.running:
         ratio = round(s.total_volume / (s.yesterday_volume if s.yesterday_volume > 0 else 1), 2)
         if ratio < vol_threshold: continue
         
+        daily_high = s.high if s.high > 0 else s.close
+        if ((daily_high - s.close) / daily_high * 100) > back_limit: continue
+        
         st.session_state.trigger_history[code] = [t for t in st.session_state.trigger_history.get(code, []) if t > now - timedelta(minutes=10)] + [now]
         hits = len(st.session_state.trigger_history[code])
         cat = st.session_state.cat_map.get(code, "其他")
@@ -199,7 +214,7 @@ if st.session_state.running:
         data_list.append(item)
         
         if hits >= 10 and code not in st.session_state.reported_codes:
-            if st.session_state.market_safe and vwap_dist <= vwap_dist_thr:
+            if st.session_state.market_safe and vwap_dist <= vwap_dist_limit:
                 item['cond'] = f"🔥 {cat}族群強勢" if cat_hits.get(cat, 0) >= 2 else "🚀 短線爆發"
                 send_winner_alert(item)
                 st.session_state.reported_codes.add(code)
