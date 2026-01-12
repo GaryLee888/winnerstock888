@@ -171,4 +171,22 @@ if st.session_state.running:
             hits = len(st.session_state.trigger_history[code])
             
             item = {
-                "code": code, "name": st.session_state.name_map.
+                "code": code, "name": st.session_state.name_map.get(code, ""), 
+                "price": s.close, "chg": chg, "hit": hits,
+                "sl": round(s.close * 0.985, 2), "tp": round(s.close * 1.025, 2),
+                "vwap_dist": vwap_dist
+            }
+            data_list.append(item)
+            
+            # 發報判定
+            if hits >= 10 and code not in st.session_state.reported_codes:
+                if st.session_state.market_safe and vwap_dist <= vwap_dist_thr:
+                    send_winner_alert(item)
+                    st.session_state.reported_codes.add(code)
+    
+    progress_bar.empty()
+    if data_list:
+        st.dataframe(pd.DataFrame(data_list).sort_values("hit", ascending=False), use_container_width=True)
+    
+    time.sleep(scan_interval)
+    st.rerun()
