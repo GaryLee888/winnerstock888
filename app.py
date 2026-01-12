@@ -6,7 +6,7 @@ import requests
 from datetime import datetime, timedelta
 
 # ==========================================
-# 1. 強力緩存連線 (含自動修復功能)
+# 1. 強力緩存連線
 # ==========================================
 @st.cache_resource
 def get_shioaji_api(api_key, secret_key):
@@ -24,16 +24,17 @@ def init_states():
         if k not in st.session_state: st.session_state[k] = v
 
 # ==========================================
-# 2. Discord 通報 (極簡對齊)
+# 2. Discord 通報
 # ==========================================
 def send_winner_alert(item, url):
     msg = f"### 🚀 財神降臨！發財電報\n🔥 **{item['code']} {item['name']}**\n"
     msg += f"```yaml\n"
     msg += f"{'現價':<6}: {item['price']}\n"
     msg += f"{'漲幅':<6}: {item['chg']}%\n"
-    msg += f"{'停利價':<5}: {item['tp']}\n"
-    msg += f"{'停損價':<5}: {item['sl']}\n"
-    msg += f"{'偵測次數':<4}: {item['hit']} 次\n"
+    content_txt = f"{'停利價':<5}: {item['tp']}\n"
+    content_txt += f"{'停損價':<5}: {item['sl']}\n"
+    content_txt += f"{'偵測次數':<4}: {item['hit']} 次\n"
+    msg += content_txt
     msg += "```"
     try: requests.post(url, json={"content": msg}, timeout=5)
     except: pass
@@ -41,7 +42,7 @@ def send_winner_alert(item, url):
 # ==========================================
 # 3. 主介面
 # ==========================================
-st.set_page_config(page_title="當沖雷達-終極修正版", layout="wide")
+st.set_page_config(page_title="當沖雷達-結構修正版", layout="wide")
 init_states()
 
 with st.sidebar:
@@ -56,7 +57,7 @@ with st.sidebar:
     v_now = st.number_input("盤中量 >", 1000)
     m_thr = st.number_input("1分動能% >", 1.5)
     w_vol = st.number_input("動態量權重", 1.0)
-    b_lim = st.number_input("回撤限制%", 1.2)
+    b_lim = st.number_input("回徹限制%", 1.2)
     dist_thr = st.number_input("乖離限制%", 3.5)
 
     if not st.session_state.running:
@@ -72,33 +73,41 @@ with st.sidebar:
 # 4. 監控邏輯
 # ==========================================
 if st.session_state.running:
-    # 修正：將 now 定義在最外層，確保所有區塊都能讀取
     now = datetime.now()
-    
     try:
         api = get_shioaji_api(K1, K2)
         
-        # A. 合約下載保護
+        # A. 合約下載保護 (解決 Indices 報錯)
         if not st.session_state.all_contracts:
-            with st.spinner("同步市場資訊..."):
-                if not api.Contracts.Stocks:
-                    st.error("API 尚未就緒，請檢查連線。")
-                    st.stop()
+            with st.spinner("同步市場資訊與指數合約..."):
                 tse_list = list(api.Contracts.Stocks.TSE) if api.Contracts.Stocks.TSE else []
                 otc_list = list(api.Contracts.Stocks.OTC) if api.Contracts.Stocks.OTC else []
                 raw = [c for c in (tse_list + otc_list) if len(c.code) == 4]
                 st.session_state.ref_map = {c.code: float(c.reference) for c in raw if c.reference}
                 st.session_state.name_map = {c.code: c.name for c in raw}
                 st.session_state.all_contracts = [c for c in raw if c.code in st.session_state.ref_map]
-                st.session_state.m_contracts = [api.Contracts.Indices.TSE["001"], api.Contracts.Indices.OTC["OTC"]]
+                
+                # 修正：嘗試多種路徑抓取指數
+                m_list = []
+                try:
+                    # 路徑 1: Indices 屬性
+                    m_list = [api.Contracts.Indices.TSE["001"], api.Contracts.Indices.OTC["OTC"]]
+                except:
+                    try:
+                        # 路徑 2: 部分版本將指數放在 Stocks 下
+                        m_list = [api.Contracts.Stocks.TSE["001"], api.Contracts.Stocks.OTC["OTC"]]
+                    except:
+                        # 路徑 3: 備案 - 權值股參考 (2330 為大盤參考, 6488 為櫃買參考)
+                        m_list = [api.Contracts.Stocks.TSE["2330"], api.Contracts.Stocks.OTC["6488"]]
+                st.session_state.m_contracts = m_list
 
         # B. 大盤監控
         try:
             m_snaps = api.snapshots(st.session_state.m_contracts)
             danger = False
             for s in m_snaps:
-                if s.close <= 100: continue 
-                hist = st.session_state.market_history[s.code]
+                if s.close <= 0: continue 
+                hist = st.session_state.market_history.get(s.code, [])
                 st.session_state.market_history[s.code] = [(t, p) for t, p in hist if t > now - timedelta(minutes=5)]
                 st.session_state.market_history[s.code].append((now, s.close))
                 past = [p for t, p in st.session_state.market_history[s.code] if t < now - timedelta(minutes=2)]
@@ -115,43 +124,37 @@ if st.session_state.running:
         # D. 市場掃描
         res_list = []
         conts = st.session_state.all_contracts
-        p_bar = st.progress(0, text=f"掃描中... 基準係數: {v_base}")
+        p_bar = st.progress(0, text=f"掃描中... 環境:{'安全' if st.session_state.market_safe else '風險'}")
         
         batch = 500
         for i in range(0, len(conts), batch):
             p_bar.progress(min((i+batch)/len(conts), 1.0))
             snaps = api.snapshots(conts[i:i+batch])
-            
             for s in snaps:
                 code = s.code; ref = st.session_state.ref_map.get(code, 0)
                 if not code or s.close <= 0 or ref <= 0: continue
-                
-                # 昨日量與盤中量過濾
                 if s.yesterday_volume < v_prev or s.total_volume < v_now: continue
-                
-                # 基準總量比例分析 (移植重點)
                 ratio = s.total_volume / s.yesterday_volume
                 if ratio < thr: continue
-                
                 chg = round(((s.close - ref) / ref * 100), 2)
                 if not (min_c <= chg <= 9.8): continue
                 
-                # 1分動能
+                # 動能
                 last_v = st.session_state.last_total_vol_map.get(code, s.total_volume)
                 v_diff = s.total_volume - last_v
                 st.session_state.last_total_vol_map[code] = s.total_volume
-                
                 if v_diff <= 0: continue 
                 v_pct = (v_diff / s.total_volume) * 100
                 if not (v_pct >= m_thr or v_diff >= 50): continue
                 
-                # 回撤與乖離
+                # 回撤/乖離
                 if s.high > 0 and ((s.high - s.close) / s.high * 100) > b_lim: continue
                 vwap = (s.amount / s.total_volume) if s.total_volume > 0 else s.close
                 dist = ((s.close - vwap) / vwap * 100)
                 
-                # Hits 紀錄 (確認 now 已定義)
-                st.session_state.trigger_history[code] = [t for t in st.session_state.trigger_history.get(code, []) if t > now - timedelta(minutes=10)] + [now]
+                # Hits
+                hist_trigger = st.session_state.trigger_history.get(code, [])
+                st.session_state.trigger_history[code] = [t for t in hist_trigger if t > now - timedelta(minutes=10)] + [now]
                 h = len(st.session_state.trigger_history[code])
                 
                 item = {"code":code, "name":st.session_state.name_map.get(code,""), "price":s.close, "chg":chg, "hit":h, "tp":round(s.close*1.025,2), "sl":round(s.close*0.985,2), "dist":dist}
@@ -165,7 +168,6 @@ if st.session_state.running:
         p_bar.empty()
         if res_list:
             st.dataframe(pd.DataFrame(res_list).sort_values("hit", ascending=False), use_container_width=True)
-        
         time.sleep(scan_int)
         st.rerun()
 
