@@ -34,8 +34,9 @@ def send_winner_alert(item, url, is_test=False):
     msg += f"{'現價':<6}: {item['price']}\n"
     msg += f"{'漲幅':<6}: {item['chg']}%\n"
     msg += f"{'停利價':<5}: {item['tp']}\n"
-    msg += f"{'停損價':<5}: {item['sl']}\n"
-    msg += f"{'偵測次數':<4}: {item['hit']} 次\n"
+    content_txt = f"{'停損價':<5}: {item['sl']}\n"
+    content_txt += f"{'偵測次數':<4}: {item['hit']} 次\n"
+    msg += content_txt
     msg += "```"
     try:
         requests.post(url, json={"content": msg}, timeout=5)
@@ -55,47 +56,43 @@ with st.sidebar:
     K2 = st.text_input("SECRET KEY", value=st.secrets.get("SECRET_KEY", ""), type="password")
     URL = st.text_input("WEBHOOK", value=st.secrets.get("DISCORD_WEBHOOK_URL", ""))
     
-    scan_int = st.slider("秒數", 5, 60, 10)
+    scan_int = st.slider("掃描頻率(秒)", 5, 60, 10)
     min_c = st.number_input("漲幅下限%", 2.5)
-    v_prev = st.number_input("昨日量 >", 3000)
-    v_now = st.number_input("盤中量 >", 1000)
+    v_prev = st.number_input("昨日交易量 >", 3000)
+    v_now = st.number_input("盤中總張數 >", 1000)
     m_thr = st.number_input("1分動能% >", 1.5)
     w_vol = st.number_input("動態量權重", 1.0)
-    b_lim = st.number_input("回徹限制%", 1.2)
-    dist_thr = st.number_input("乖離限制%", 3.5)
+    b_lim = st.number_input("回撤限制%", 1.2)
+    dist_thr = st.number_input("均價乖離% <", 3.5)
 
     st.divider()
-    # 【加回測試發報功能】
     if st.button("🚀 測試 Discord 通報", use_container_width=True):
-        test_item = {
-            "code": "2330", "name": "台積電", "price": 1000.0, "chg": 5.0, 
-            "tp": 1025.0, "sl": 985.0, "hit": 10
-        }
+        test_item = {"code": "2330", "name": "台積電", "price": 1000.0, "chg": 5.0, "tp": 1025.0, "sl": 985.0, "hit": 10}
         if send_winner_alert(test_item, URL, is_test=True):
             st.toast("✅ 測試通報已成功送出！")
         else:
             st.error("❌ 送出失敗，請檢查 Webhook URL")
 
     if not st.session_state.running:
-        if st.button("▶ 啟動", type="primary", use_container_width=True):
+        if st.button("▶ 啟動雷達", type="primary", use_container_width=True):
             st.session_state.running = True
             st.rerun()
     else:
-        if st.button("■ 停止", type="secondary", use_container_width=True):
+        if st.button("■ 停止雷達", type="secondary", use_container_width=True):
             st.session_state.running = False
             st.rerun()
 
 # ==========================================
-# 4. 監控邏輯
+# 4. 監控邏輯 (含 BUG 修正與優化)
 # ==========================================
 if st.session_state.running:
     now = datetime.now()
     try:
         api = get_shioaji_api(K1, K2)
         
-        # A. 合約下載保護 (解決 Indices 屬性報錯)
+        # A. 合約下載保護
         if not st.session_state.all_contracts:
-            with st.spinner("同步市場資訊中..."):
+            with st.spinner("同步全市場資訊中..."):
                 tse_list = list(api.Contracts.Stocks.TSE) if api.Contracts.Stocks.TSE else []
                 otc_list = list(api.Contracts.Stocks.OTC) if api.Contracts.Stocks.OTC else []
                 raw = [c for c in (tse_list + otc_list) if len(c.code) == 4]
@@ -103,22 +100,25 @@ if st.session_state.running:
                 st.session_state.name_map = {c.code: c.name for c in raw}
                 st.session_state.all_contracts = [c for c in raw if c.code in st.session_state.ref_map]
                 
-                # 指數抓取路徑容錯
                 try: m_list = [api.Contracts.Indices.TSE["001"], api.Contracts.Indices.OTC["OTC"]]
                 except:
                     try: m_list = [api.Contracts.Stocks.TSE["001"], api.Contracts.Stocks.OTC["OTC"]]
                     except: m_list = [api.Contracts.Stocks.TSE["2330"], api.Contracts.Stocks.OTC["6488"]]
                 st.session_state.m_contracts = m_list
 
-        # B. 大盤監控
+        # B. 大盤監控 (修正重複數據 BUG)
         try:
             m_snaps = api.snapshots(st.session_state.m_contracts)
             danger = False
             for s in m_snaps:
                 if s.close <= 0: continue 
                 hist = st.session_state.market_history.get(s.code, [])
+                # 只有當最後一筆價格不同時才記錄，避免列表爆炸
+                if not hist or hist[-1][1] != s.close:
+                    hist.append((now, s.close))
+                # 保留最近 5 分鐘
                 st.session_state.market_history[s.code] = [(t, p) for t, p in hist if t > now - timedelta(minutes=5)]
-                st.session_state.market_history[s.code].append((now, s.close))
+                
                 past = [p for t, p in st.session_state.market_history[s.code] if t < now - timedelta(minutes=2)]
                 if past and (s.close - past[-1]) / past[-1] * 100 < -0.15: danger = True
             st.session_state.market_safe = not danger
@@ -133,17 +133,21 @@ if st.session_state.running:
         # D. 市場掃描
         res_list = []
         conts = st.session_state.all_contracts
-        p_bar = st.progress(0, text=f"掃描中... 環境:{'安全' if st.session_state.market_safe else '風險'}")
+        p_bar = st.progress(0, text=f"掃描中... 基準係數: {v_base}")
         
-        batch = 500
-        for i in range(0, len(conts), batch):
-            p_bar.progress(min((i+batch)/len(conts), 1.0))
-            snaps = api.snapshots(conts[i:i+batch])
+        # 優化掃描：分大組處理以減少 UI 刷新頻率
+        batch_size = 500
+        for i in range(0, len(conts), batch_size):
+            # 每掃描一大群標的更新一次進度，防止 UI 卡頓
+            p_bar.progress(min((i + batch_size) / len(conts), 1.0))
+            snaps = api.snapshots(conts[i : i + batch_size])
+            
             for s in snaps:
                 code = s.code; ref = st.session_state.ref_map.get(code, 0)
                 if not code or s.close <= 0 or ref <= 0: continue
-                if s.yesterday_volume < v_prev or s.total_volume < v_now: continue
                 
+                # 基準總量分析 (移植核心)
+                if s.yesterday_volume < v_prev or s.total_volume < v_now: continue
                 ratio = s.total_volume / s.yesterday_volume
                 if ratio < thr: continue
                 
@@ -177,6 +181,10 @@ if st.session_state.running:
                         st.session_state.reported_codes.add(code)
 
         p_bar.empty()
+        # 定期清理 trigger_history 避免記憶體過大
+        if len(st.session_state.trigger_history) > 2000:
+            st.session_state.trigger_history = {k: v for k, v in st.session_state.trigger_history.items() if v[-1] > now - timedelta(minutes=15)}
+
         if res_list:
             st.dataframe(pd.DataFrame(res_list).sort_values("hit", ascending=False), use_container_width=True)
         time.sleep(scan_int)
