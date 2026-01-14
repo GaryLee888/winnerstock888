@@ -1,190 +1,198 @@
 import streamlit as st
-import shioaji as sj
+import yfinance as yf
 import pandas as pd
-import time
-import requests
-from datetime import datetime, timedelta, timezone
+import numpy as np
+import twstock
+import warnings
 
-# ==========================================
-# 1. 強力緩存連線
-# ==========================================
-@st.cache_resource
-def get_shioaji_api(api_key, secret_key):
-    api = sj.Shioaji()
-    api.login(api_key, secret_key)
-    return api
+# --- 基礎設定 ---
+st.set_page_config(page_title="台股智慧策略決策系統", layout="wide")
+warnings.filterwarnings("ignore")
 
-def init_states():
-    defaults = {
-        "running": False, "reported_codes": set(), "last_total_vol_map": {},
-        "trigger_history": {}, "market_history": {"001": [], "OTC": []},
-        "market_safe": True, "all_contracts": [], "ref_map": {}, "name_map": {}
-    }
-    for k, v in defaults.items():
-        if k not in st.session_state: st.session_state[k] = v
+class ProStockAnalyzer:
+    def __init__(self):
+        self.special_mapping = {"貝爾威勒": "7861", "能率亞洲": "7777", "力旺": "3529", "朋程": "8255"}
+        self.twii_df = self.fetch_market_data()
 
-# ==========================================
-# 2. Discord 通報 (極簡對齊)
-# ==========================================
-def send_winner_alert(item, url, is_test=False):
-    header = "🧪 測試發報" if is_test else "🚀 財神降臨！發財電報"
-    msg = f"### {header}\n"
-    msg += f"🔥 **{item['code']} {item['name']}**\n"
-    msg += f"```yaml\n"
-    msg += f"{'現價':<6}: {item['price']}\n"
-    msg += f"{'漲幅':<6}: {item['chg']}%\n"
-    msg += f"{'停利價':<5}: {item['tp']}\n"
-    msg += f"{'停損價':<5}: {item['sl']}\n"
-    msg += f"{'偵測次數':<4}: {item['hit']} 次\n"
-    msg += "```"
-    try:
-        requests.post(url, json={"content": msg}, timeout=5)
-        return True
-    except:
-        return False
+    def fetch_market_data(self):
+        try:
+            df = yf.download("^TWII", period="2y", progress=False)
+            if df is not None and not df.empty:
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+                return df
+        except: return None
+        return None
 
-# ==========================================
-# 3. 主介面
-# ==========================================
-st.set_page_config(page_title="當沖雷達-終極修正版", layout="wide")
-init_states()
+    def fetch_data_robust(self, sid, period="1y", interval="1d"):
+        for suffix in [".TW", ".TWO"]:
+            try:
+                ticker = f"{sid}{suffix}"
+                df = yf.download(ticker, period=period, interval=interval, progress=False)
+                if df is not None and not df.empty:
+                    if isinstance(df.columns, pd.MultiIndex):
+                        df.columns = df.columns.get_level_values(0)
+                    return df, ticker
+            except: continue
+        return None, None
+
+    def calculate_advanced_strategy(self, df_d, df_w):
+        df = df_d.copy()
+        # 1. 基礎指標
+        df['MA5'] = df['Close'].rolling(5).mean()
+        df['MA10'] = df['Close'].rolling(10).mean()
+        df['MA20'] = df['Close'].rolling(20).mean()
+        std = df['Close'].rolling(20).std()
+        df['BB_up'] = df['MA20'] + (std * 2)
+        df['BB_low'] = df['MA20'] - (std * 2)
+        df['BB_width'] = (df['BB_up'] - df['BB_low']) / df['MA20']
+        
+        low_9, high_9 = df['Low'].rolling(9).min(), df['High'].rolling(9).max()
+        df['K'] = ((df['Close'] - low_9) / (high_9 - low_9).replace(0, np.nan) * 100).ewm(com=2).mean()
+        df['D'] = df['K'].ewm(com=2).mean()
+        
+        ema12, ema26 = df['Close'].ewm(span=12).mean(), df['Close'].ewm(span=26).mean()
+        df['MACD_hist'] = (ema12 - ema26) - (ema12 - ema26).ewm(span=9).mean()
+        
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        df['RSI'] = 100 - (100 / (1 + (gain / loss).replace(0, np.nan)))
+        
+        tr = pd.concat([df['High']-df['Low'], (df['High']-df['Close'].shift()).abs(), (df['Low']-df['Close'].shift()).abs()], axis=1).max(axis=1)
+        df['ATR'] = tr.rolling(14).mean()
+        
+        # 2. 籌碼與位階
+        df['VMA20'] = df['Volume'].rolling(20).mean()
+        df['OBV'] = (np.sign(df['Close'].diff()) * df['Volume']).fillna(0).cumsum()
+        df['MFI'] = 50 + (df['Close'].diff().rolling(14).mean() * 10)
+        df['BIAS5'] = (df['Close'] - df['MA5']) / df['MA5'] * 100
+        df['BIAS20'] = (df['Close'] - df['MA20']) / df['MA20'] * 100
+        df['Bias_P90'] = df['BIAS20'].rolling(250).quantile(0.9)
+        df['ROC'] = df['Close'].pct_change(12) * 100
+        df['SR_Rank'] = (df['Close'] - df['Close'].rolling(60).min()) / (df['Close'].rolling(60).max() - df['Close'].rolling(60).min()).replace(0, 1)
+        
+        # 3. 進階策略項 (Pro 版核心)
+        df['Range_Ratio'] = (df['High'] - df['Low']) / df['Close']
+        df['VCP_Score'] = df['Range_Ratio'].rolling(10).mean() < df['Range_Ratio'].rolling(30).mean()
+        df['Squeeze_Release'] = (df['BB_width'] > df['BB_width'].shift(1)) & (df['BB_width'].shift(1) < 0.08)
+        
+        if df_w is not None and not df_w.empty:
+            w_ma20 = df_w['Close'].rolling(20).mean()
+            df['Weekly_Trend'] = float(df_w['Close'].iloc[-1]) > float(w_ma20.iloc[-1])
+        else: df['Weekly_Trend'] = False
+
+        if self.twii_df is not None:
+            s_ret = df['Close'].pct_change(20)
+            m_ret = self.twii_df['Close'].pct_change(20).reindex(s_ret.index, method='ffill')
+            df['RS'] = s_ret - m_ret
+        else: df['RS'] = 0
+
+        up_v = df['Volume'].where(df['Close'] > df['Close'].shift(1), 0).rolling(10).sum()
+        dn_v = df['Volume'].where(df['Close'] < df['Close'].shift(1), 0).rolling(10).sum()
+        df['Vol_Ratio'] = up_v / dn_v.replace(0, 1)
+
+        return df.dropna()
+
+    def calculate_total_score(self, curr, prev, df_p):
+        # 基礎 20 項 (各 5分，共 100分)
+        base_conds = [
+            curr['Close'] > curr['MA20'], curr['Close'] > curr['BB_up'],
+            curr['K'] > curr['D'], curr['MACD_hist'] > 0, curr['RSI'] > 50,
+            curr['MA5'] > curr['MA10'], curr['K'] > 50, abs(curr['BIAS20']) < 10,
+            curr['BB_width'] < 0.1, curr['Close'] > prev['Close'],
+            curr['RS'] > 0, curr['OBV'] > df_p['OBV'].mean(), curr['MFI'] > 50,
+            curr['Volume'] > curr['VMA20'], curr['Close'] > curr['MA5'],
+            curr['BIAS5'] > curr['BIAS20'], curr['Close'] > curr['MA20'], # KC Mid 簡化為 MA20
+            curr['Vol_Ratio'] > 1, curr['ROC'] > 0, curr['SR_Rank'] > 0.5
+        ]
+        # 進階 5 項 (各 10分，共 50分)
+        adv_conds = [
+            curr['VCP_Score'], curr['Volume'] > curr['VMA20'] * 1.5,
+            curr['Squeeze_Release'], curr['BIAS20'] < curr['Bias_P90'],
+            curr['Weekly_Trend']
+        ]
+        total = sum(base_conds) * 5 + sum(adv_conds) * 10
+        return int((total / 150) * 100), base_conds, adv_conds
+
+# --- UI 介面 ---
+analyzer = ProStockAnalyzer()
 
 with st.sidebar:
-    st.header("⚙️ 核心監控參數")
-    K1 = st.text_input("API KEY", value=st.secrets.get("API_KEY", ""), type="password")
-    K2 = st.text_input("SECRET KEY", value=st.secrets.get("SECRET_KEY", ""), type="password")
-    URL = st.text_input("WEBHOOK", value=st.secrets.get("DISCORD_WEBHOOK_URL", ""))
-    
-    scan_int = st.slider("掃描頻率(秒)", 5, 60, 10)
-    min_c = st.number_input("漲幅下限%", 2.5)
-    v_prev = st.number_input("昨日交易量 >", 3000)
-    v_now = st.number_input("盤中總張數 >", 1000)
-    m_thr = st.number_input("1分動能% >", 1.5)
-    w_vol = st.number_input("動態量權重", 1.0)
-    b_lim = st.number_input("回撤限制%", 1.2)
-    dist_thr = st.number_input("均價乖離% <", 3.5)
-
+    st.title("🛡️ Pro 智慧策略設定")
+    atr_sl_mult = st.slider("動態止損倍數 (ATR)", 1.5, 3.5, 2.5)
     st.divider()
-    if st.button("🚀 測試 Discord 通報", use_container_width=True):
-        test_item = {"code": "2330", "name": "台積電", "price": 1000.0, "chg": 5.0, "tp": 1025.0, "sl": 985.0, "hit": 10}
-        send_winner_alert(test_item, URL, is_test=True)
+    default_stocks = ["2330", "2317", "2454", "能率亞洲", "2603", "2881", "3035", "6235", "", ""]
+    queries = [st.text_input(f"股票 {i+1}", v, key=f"q{i}") for i, v in enumerate(default_stocks)]
+    queries = [q for q in queries if q]
 
-    if not st.session_state.running:
-        if st.button("▶ 啟動雷達", type="primary", use_container_width=True):
-            st.session_state.running = True
-            st.rerun()
-    else:
-        if st.button("■ 停止雷達", type="secondary", use_container_width=True):
-            st.session_state.running = False
-            st.rerun()
+st.title("🚀 台股 Pro 智慧全方位決策系統")
 
-# ==========================================
-# 4. 監控邏輯 (解決時區與大盤判斷 BUG)
-# ==========================================
-if st.session_state.running:
-    # 修正：強制使用台灣時區 (UTC+8)
-    now = datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None)
-    
-    try:
-        api = get_shioaji_api(K1, K2)
-        
-        # A. 合約下載保護
-        if not st.session_state.all_contracts:
-            with st.spinner("同步全市場資訊中..."):
-                tse_list = list(api.Contracts.Stocks.TSE) if api.Contracts.Stocks.TSE else []
-                otc_list = list(api.Contracts.Stocks.OTC) if api.Contracts.Stocks.OTC else []
-                raw = [c for c in (tse_list + otc_list) if len(c.code) == 4]
-                st.session_state.ref_map = {c.code: float(c.reference) for c in raw if c.reference}
-                st.session_state.name_map = {c.code: c.name for c in raw}
-                st.session_state.all_contracts = [c for c in raw if c.code in st.session_state.ref_map]
-                
-                try: m_list = [api.Contracts.Indices.TSE["001"], api.Contracts.Indices.OTC["OTC"]]
-                except:
-                    try: m_list = [api.Contracts.Stocks.TSE["001"], api.Contracts.Stocks.OTC["OTC"]]
-                    except: m_list = [api.Contracts.Stocks.TSE["2330"], api.Contracts.Stocks.OTC["6488"]]
-                st.session_state.m_contracts = m_list
-
-        # B. 大盤監控 (修正早盤數據不足 BUG)
-        try:
-            m_snaps = api.snapshots(st.session_state.m_contracts)
-            danger = False
-            for s in m_snaps:
-                if s.close <= 0: continue 
-                hist = st.session_state.market_history.get(s.code, [])
-                if not hist or hist[-1][1] != s.close:
-                    hist.append((now, s.close))
-                st.session_state.market_history[s.code] = [(t, p) for t, p in hist if t > now - timedelta(minutes=5)]
-                
-                past = [p for t, p in st.session_state.market_history[s.code] if t < now - timedelta(minutes=2)]
-                if len(past) > 0: # 修正處：檢查 past 是否有值
-                    if (s.close - past[-1]) / past[-1] * 100 < -0.15: danger = True
-            st.session_state.market_safe = not danger
-        except: 
-            st.session_state.market_safe = True 
-
-        # C. 量能基準分析 (移植核心)
-        hm = now.hour * 100 + now.minute
-        v_base = 0.25 if hm < 930 else 0.55 if hm < 1130 else 0.85
-        thr = v_base * w_vol
-
-        # D. 市場掃描
-        res_list = []
-        conts = st.session_state.all_contracts
-        p_bar = st.progress(0, text=f"掃描中... 台灣時間: {now.strftime('%H:%M:%S')}")
-        
-        batch_size = 500
-        for i in range(0, len(conts), batch_size):
-            p_bar.progress(min((i + batch_size) / len(conts), 1.0))
-            snaps = api.snapshots(conts[i : i + batch_size])
+if queries:
+    tabs = st.tabs([f"📊 {q}" for q in queries])
+    for tab, query in zip(tabs, queries):
+        with tab:
+            sid = analyzer.special_mapping.get(query, query)
+            if not sid.isdigit():
+                for code, info in twstock.codes.items():
+                    if query in info.name: sid = code; break
             
-            for s in snaps:
-                code = s.code; ref = st.session_state.ref_map.get(code, 0)
-                if not code or s.close <= 0 or ref <= 0: continue
+            df_d, _ = analyzer.fetch_data_robust(sid, "1y", "1d")
+            df_w, _ = analyzer.fetch_data_robust(sid, "2y", "1wk")
+            
+            if df_d is not None and not df_d.empty:
+                df_p = analyzer.calculate_advanced_strategy(df_d, df_w)
+                curr = df_p.iloc[-1]
+                prev = df_p.iloc[-2]
+                curr_p = float(curr['Close'])
                 
-                # 基準總量分析
-                if s.yesterday_volume < v_prev or s.total_volume < v_now: continue
-                ratio = s.total_volume / s.yesterday_volume
-                if ratio < thr: continue
+                # 智慧點位計算
+                smart_entry = float(curr['MA20']) if curr_p > curr['MA20'] else float(curr['MA10'])
+                chandelier_exit = df_p['High'].tail(20).max() - (curr['ATR'] * atr_sl_mult)
+                smart_sl = max(chandelier_exit, curr_p * 0.93)
+                smart_tp = curr_p + (curr_p - smart_sl) * 2.5
                 
-                chg = round(((s.close - ref) / ref * 100), 2)
-                if not (min_c <= chg <= 9.8): continue
+                # 評分
+                score, b_list, a_list = analyzer.calculate_total_score(curr, prev, df_p)
                 
-                # 1分動能
-                last_v = st.session_state.last_total_vol_map.get(code, s.total_volume)
-                v_diff = s.total_volume - last_v
-                st.session_state.last_total_vol_map[code] = s.total_volume
-                
-                if v_diff <= 0: continue 
-                v_pct = (v_diff / s.total_volume) * 100
-                if not (v_pct >= m_thr or v_diff >= 50): continue
-                
-                # 回撤與乖離
-                if s.high > 0 and ((s.high - s.close) / s.high * 100) > b_lim: continue
-                vwap = (s.amount / s.total_volume) if s.total_volume > 0 else s.close
-                dist = ((s.close - vwap) / vwap * 100)
-                
-                # Hits 紀錄
-                hist_trigger = st.session_state.trigger_history.get(code, [])
-                st.session_state.trigger_history[code] = [t for t in hist_trigger if t > now - timedelta(minutes=10)] + [now]
-                h = len(st.session_state.trigger_history[code])
-                
-                item = {"code":code, "name":st.session_state.name_map.get(code,""), "price":s.close, "chg":chg, "hit":h, "tp":round(s.close*1.025,2), "sl":round(s.close*0.985,2), "dist":dist}
-                res_list.append(item)
-                
-                if h >= 10 and code not in st.session_state.reported_codes:
-                    if st.session_state.market_safe and dist <= dist_thr:
-                        send_winner_alert(item, URL)
-                        st.session_state.reported_codes.add(code)
+                # 1. 最上方交易決策
+                if score <= 20: advice, color = "🚫 不能碰", "#7f8c8d"
+                elif score <= 40: advice, color = "👀 看就好", "#95a5a6"
+                elif score <= 60: advice, color = "⚖️ 中立觀望", "#3498db"
+                elif score <= 80: advice, color = "💸 小量試單", "#f39c12"
+                else: advice, color = "🔥 強烈買進", "#e74c3c"
 
-        p_bar.empty()
-        if res_list:
-            st.dataframe(pd.DataFrame(res_list).sort_values("hit", ascending=False), use_container_width=True)
-        time.sleep(scan_int)
-        st.rerun()
+                st.markdown(f"<h2 style='color:{color}; text-align:center;'>{advice} (得分: {score})</h2>", unsafe_allow_html=True)
+                st.progress(score / 100)
 
-    except Exception as e:
-        if "Disconnected" in str(e) or "NoneType" in str(e):
-            st.cache_resource.clear()
-        st.error(f"⚠️ 運行抖動，5秒後自動嘗試恢復: {e}")
-        time.sleep(5)
-        st.rerun()
+                # 2. 智慧價位卡片
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("💰 目前現價", f"{curr_p:.2f}")
+                c2.metric("🎯 智慧買點", f"{smart_entry:.2f}")
+                c3.metric("🚫 動態止損", f"{smart_sl:.2f}")
+                c4.metric("🏆 目標獲利", f"{smart_tp:.2f}")
+
+                # 3. 策略分析報告 (Expander)
+                with st.expander("📝 智慧策略診斷報告", expanded=True):
+                    msg = "🚩 **策略提示：** "
+                    if curr['VCP_Score']: msg += "偵測到 VCP 收斂狀態，波動縮減中。 "
+                    if curr['Squeeze_Release']: msg += "布林噴發啟動(Squeeze Release)！ "
+                    if curr_p > curr['Bias_P90']: msg += "⚠️ 注意：乖離率進入過熱區(P90)。 "
+                    if not curr['Weekly_Trend']: msg += "⚠️ 警告：週線趨勢向下，長線偏空。"
+                    st.write(msg)
+                    
+                    st.divider()
+                    col_l, col_r = st.columns(2)
+                    col_l.write("**基礎指標符合數:** " + str(sum(b_list)) + "/20")
+                    col_r.write("**進階策略加分項:** " + str(sum(a_list)) + "/5")
+
+                # 4. 互動圖表
+                st.subheader("📈 技術走勢與智慧買賣點")
+                chart_df = df_p.tail(80).copy()
+                # 為了顯示買賣點，將點位加入圖表數據
+                chart_df['智慧買點'] = smart_entry
+                chart_df['動態止損'] = smart_sl
+                st.line_chart(chart_df[['Close', 'MA20', '智慧買點', '動態止損']])
+
+            else:
+                st.error(f"無法讀取股票 {query} 的數據")
