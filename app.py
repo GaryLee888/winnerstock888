@@ -4,12 +4,13 @@ import pandas as pd
 import time
 import requests
 import io
+import os
 import platform
 from datetime import datetime, timedelta
 from PIL import Image, ImageDraw, ImageFont
 
 # ==========================================
-# 1. 核心配置 (Secrets 讀取)
+# 1. 核心配置 (從 Secrets 讀取)
 # ==========================================
 try:
     API_KEY = st.secrets["SHIOAJI_API_KEY"].strip()
@@ -19,7 +20,7 @@ except Exception as e:
     st.error("❌ 找不到 Secrets 設定！請在 Settings -> Secrets 填入金鑰。")
     st.stop()
 
-st.set_page_config(page_title="當沖雷達-修復版", layout="wide")
+st.set_page_config(page_title="當沖雷達-100%邏輯還原版", layout="wide")
 
 # ==========================================
 # 2. 初始化 Session State
@@ -50,6 +51,7 @@ def get_font(size):
     except: return ImageFont.load_default()
 
 def send_winner_alert(item):
+    """繪製發財電報卡片 (100% 還原原始卡片格式)"""
     img = Image.new('RGB', (600, 400), color=(18, 19, 23))
     draw = ImageDraw.Draw(img)
     accent = (255, 60, 60) if item['chg'] > 8 else (255, 165, 0)
@@ -66,7 +68,7 @@ def send_winner_alert(item):
     img.save(buf, format='PNG')
     buf.seek(0)
     try:
-        requests.post(DISCORD_WEBHOOK_URL, data={"content": f"🚀 **{item['code']} {item['name']}** 觸發！"}, 
+        requests.post(DISCORD_WEBHOOK_URL, data={"content": f"🚀 **{item['code']} {item['name']}** 爆發中！"}, 
                       files={"file": (f"{item['code']}.png", buf, "image/png")}, timeout=10)
         return True
     except: return False
@@ -75,14 +77,19 @@ def send_winner_alert(item):
 # 4. UI 介面
 # ==========================================
 with st.sidebar:
-    st.header("🎯 核心監控參數")
-    scan_sec = st.slider("掃頻週期(秒)", 5, 60, 10)
+    st.header("🎯 核心監控參數 (原始條件)")
+    scan_sec = st.slider("掃頻(秒)", 5, 60, 10)
     chg_min = st.number_input("漲幅下限%", value=2.5, step=0.1)
     vol_yesterday_min = st.number_input("昨日交易量>", value=3000)
     vol_total_min = st.number_input("今日成交張數>", value=3000)
+    mom_min_pct_input = st.number_input("1分動能% >", value=1.5)
+    vol_weight_input = st.number_input("動態量權重", value=1.0)
+    drawdown_input = st.number_input("回撤限制%", value=1.2)
+    vwap_gap_input = st.number_input("均價乖離% <", value=3.5)
     
+    st.divider()
     if st.button("🧪 測試 Discord 發報", use_container_width=True):
-        send_winner_alert({"code":"TEST", "name":"測試", "price":100, "chg":5, "tp":105, "sl":98, "cond":"測試"})
+        send_winner_alert({"code":"9999", "name":"測試標的", "price":100, "chg":5, "tp":102.5, "sl":98.5, "cond":"測試"})
 
     if st.session_state.state['history']:
         df_exp = pd.DataFrame(st.session_state.state['history'])
@@ -96,21 +103,16 @@ with st.sidebar:
         if st.button("▶ 啟動監控", type="primary", use_container_width=True):
             try:
                 st.session_state.api.login(API_KEY, SECRET_KEY)
-                # 修正：更安全的合約抓取與昨日量判定
                 raw = [c for m in [st.session_state.api.Contracts.Stocks.TSE, st.session_state.api.Contracts.Stocks.OTC] for c in m if len(c.code) == 4]
                 
-                # 解決昨天成交量屬性報錯的關鍵代碼
-                st.session_state.y_vol_map = {}
-                for c in raw:
-                    # 有些版本是 yesterday_volume, 有些是昨收量，若都沒有則設為 0
-                    y_vol = getattr(c, 'yesterday_volume', 0)
-                    st.session_state.y_vol_map[c.code] = y_vol
-
+                # 修復 Bug：使用 getattr 安全讀取 yesterday_volume，絕不刪減邏輯
+                st.session_state.y_vol_map = {c.code: getattr(c, 'yesterday_volume', 0) for c in raw}
                 st.session_state.ref_map = {c.code: float(c.reference) for c in raw if c.reference}
                 st.session_state.name_map = {c.code: c.name for c in raw}
                 st.session_state.cat_map = {c.code: c.category for c in raw}
                 st.session_state.contracts = [c for c in raw if c.code in st.session_state.ref_map]
                 st.session_state.mkt_contracts = [st.session_state.api.Contracts.Indices.TSE["001"], st.session_state.api.Contracts.Indices.OTC["OTC"]]
+                
                 st.session_state.state['running'] = True
                 st.rerun()
             except Exception as e: st.error(f"登入失敗: {e}")
@@ -120,12 +122,12 @@ with st.sidebar:
             st.rerun()
 
 # ==========================================
-# 5. 核心監控邏輯 (100% 比對還原)
+# 5. 核心監控邏輯 (100% 原始邏輯比對)
 # ==========================================
 if st.session_state.state['running']:
     now = datetime.now()
     
-    # 大盤檢查
+    # [1] 市場風險檢查 (check_market_risk)
     try:
         m_snaps = st.session_state.api.snapshots(st.session_state.mkt_contracts)
         danger = False
@@ -144,21 +146,24 @@ if st.session_state.state['running']:
         st.session_state.state['market_msg'] = " | ".join(m_msgs)
     except: st.session_state.state['market_safe'] = True
 
-    # 動態時間閾值
+    # [2] 動態權重調整 (與原始檔完全一致)
     hm = now.hour * 100 + now.minute
     if hm < 1000: vol_base, mom_adj, hit_thr = 0.55, 1.6, 15
     elif hm < 1100: vol_base, mom_adj, hit_thr = 0.40, 1.2, 12
     elif hm < 1230: vol_base, mom_adj, hit_thr = 0.25, 0.9, 8
     else: vol_base, mom_adj, hit_thr = 0.20, 0.7, 6
-    adj_mom_thr = (1.5 * mom_adj) * (scan_sec / 60.0)
-
-    st.info(f"🕒 {now.strftime('%H:%M:%S')} | 大盤: {st.session_state.state['market_msg']}")
-
-    # 標的掃描 (進度條)
-    all_targets = [c for c in st.session_state.contracts if st.session_state.y_vol_map.get(c.code, 0) >= vol_yesterday_min]
-    targets = all_targets[:600]
     
-    my_bar = st.progress(0, text="🔎 掃描中...")
+    # 原始動能與量能計算公式
+    adj_mom_thr = (mom_min_pct_input * mom_adj) * (scan_sec / 60.0)
+    vol_threshold = vol_base * vol_weight_input
+
+    # [3] 掃描進度顯示
+    st.info(f"🕒 {now.strftime('%H:%M:%S')} | 大盤狀態: {st.session_state.state['market_msg']}")
+    
+    targets = [c for c in st.session_state.contracts if st.session_state.y_vol_map.get(c.code, 0) >= vol_yesterday_min]
+    targets = targets[:600] # 雲端平衡掃描深度
+    
+    my_bar = st.progress(0, text="🔎 偵測中...")
     all_snaps = []
     batch_size = 100
     for i in range(0, len(targets), batch_size):
@@ -168,49 +173,60 @@ if st.session_state.state['running']:
         time.sleep(0.05)
     my_bar.empty()
 
+    # [4] 核心篩選條件 (100% 還原原始邏輯)
     cat_hits = {}
     for s in all_snaps:
         code, price = s.code, s.close
         ref = st.session_state.ref_map.get(code, 0)
+        
+        # 條件 1: 基本量價 (s.total_volume < params["成交張數>"])
         if price <= 0 or ref <= 0 or s.total_volume < vol_total_min: continue
+        
+        # 條件 2: 漲幅下限 (params["漲幅下限%"] <= chg <= 9.8)
         chg = round(((price - ref) / ref * 100), 2)
         if not (chg_min <= chg <= 9.8): continue
         
-        # 動能計算
+        # 條件 3: 1分動能計算 (min_vol_pct >= adj_mom_thr or vol_diff >= 50)
         vol_diff = 0
         min_vol_pct = 0.0
         if code in st.session_state.state['last_total_vol']:
             vol_diff = s.total_volume - st.session_state.state['last_total_vol'][code]
             if vol_diff > 0: min_vol_pct = round((vol_diff / s.total_volume) * 100, 2)
         st.session_state.state['last_total_vol'][code] = s.total_volume
+        momentum_ok = (min_vol_pct >= adj_mom_thr) or (vol_diff >= 50)
+        if not momentum_ok: continue
         
-        # 量增倍率 (Snapshot 也有 yesterday_volume 屬性)
-        y_vol = getattr(s, 'yesterday_volume', st.session_state.y_vol_map.get(code, 1))
+        # 條件 4: 量增倍率 (ratio < vol_threshold)
+        y_vol = st.session_state.y_vol_map.get(code, 1)
         if y_vol <= 0: y_vol = 1
         ratio = round(s.total_volume / y_vol, 2)
+        if ratio < vol_threshold: continue
         
-        # 核心篩選條件 (與原始檔案 100% 一致)
-        if ((min_vol_pct >= adj_mom_thr) or (vol_diff >= 50)) and (ratio >= (vol_base * 1.0)):
-            daily_high = s.high if s.high > 0 else price
-            vwap = (s.amount / s.total_volume) if s.total_volume > 0 else price
-            vwap_dist = round(((price - vwap) / vwap * 100), 2)
-            
-            # 回撤限制 (1.2%) & 均價乖離 (3.5%)
-            if ((daily_high - price) / daily_high * 100) <= 1.2 and vwap_dist <= 3.5:
-                st.session_state.state['trigger_history'][code] = [t for t in st.session_state.state['trigger_history'].get(code, []) if t > now - timedelta(minutes=10)] + [now]
-                cat = st.session_state.cat_map.get(code, "未知")
-                cat_hits[cat] = cat_hits.get(cat, 0) + 1
-                
-                if len(st.session_state.state['trigger_history'][code]) >= hit_thr and code not in st.session_state.state['reported_codes'] and st.session_state.state['market_safe']:
-                    item = {
-                        "通報時間": now.strftime("%H:%M:%S"), "代碼": code, "名稱": st.session_state.name_map.get(code),
-                        "產業": cat, "price": price, "chg": chg, "vwap_dist": vwap_dist,
-                        "sl": round(price * 0.985, 2), "tp": round(price * 1.025, 2), 
-                        "cond": f"🔥 {cat}連動" if cat_hits.get(cat, 0) >= 2 else "🚀 短線爆發"
-                    }
-                    st.session_state.state['history'].append(item)
-                    st.session_state.state['reported_codes'].add(code)
-                    send_winner_alert(item)
+        # 條件 5: 回撤限制 (drawdown > params["回撤限制%"])
+        daily_high = s.high if s.high > 0 else price
+        if ((daily_high - price) / daily_high * 100) > drawdown_input: continue
+        
+        # 條件 6: 均價乖離 (vwap_dist <= params["均價乖離% <"])
+        vwap = (s.amount / s.total_volume) if s.total_volume > 0 else price
+        vwap_dist = round(((price - vwap) / vwap * 100), 2)
+        if vwap_dist > vwap_gap_input: continue
+        
+        # [5] 觸發計數與通報 (hits >= hit_thr)
+        st.session_state.state['trigger_history'][code] = [t for t in st.session_state.state['trigger_history'].get(code, []) if t > now - timedelta(minutes=10)] + [now]
+        hits = len(st.session_state.state['trigger_history'][code])
+        cat = st.session_state.cat_map.get(code, "未知")
+        cat_hits[cat] = cat_hits.get(cat, 0) + 1
+        
+        if hits >= hit_thr and code not in st.session_state.state['reported_codes'] and st.session_state.state['market_safe']:
+            cond_msg = f"🔥 {cat}連動" if cat_hits.get(cat, 0) >= 2 else "🚀 短線爆發"
+            item = {
+                "通報時間": now.strftime("%H:%M:%S"), "代碼": code, "名稱": st.session_state.name_map.get(code),
+                "產業": cat, "price": price, "chg": chg, "vwap_dist": vwap_dist,
+                "sl": round(price * 0.985, 2), "tp": round(price * 1.025, 2), "cond": cond_msg
+            }
+            st.session_state.state['history'].append(item)
+            st.session_state.state['reported_codes'].add(code)
+            send_winner_alert(item)
 
     if st.session_state.state['history']:
         st.dataframe(pd.DataFrame(st.session_state.state['history']).tail(15), use_container_width=True)
