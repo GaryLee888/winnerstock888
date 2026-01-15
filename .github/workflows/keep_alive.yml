@@ -11,10 +11,11 @@ jobs:
     steps:
       - name: 傳送喚醒信號
         run: |
-          # 解決 exit code 47: 加入 -k 忽略 SSL 憑證檢查，加入 -f 強制回傳
-          curl -L -k -f -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36" \
+          # 移除 -f 以免 303 導向導致報錯
+          # 加入 -L 確保跟隨導向
+          curl -L -k -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36" \
           https://winnerstock888-fbgrrwk5uur9hzvwezt6z3.streamlit.app/ \
-          -o /dev/null -s -w "HTTP 狀態碼: %{http_code}\n"
+          -o /dev/null -s -w "回傳狀態碼: %{http_code}\n"
           
       - name: 狀態確認
         run: echo "喚醒指令執行完畢，時間：$(date)"
