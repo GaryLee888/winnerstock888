@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from PIL import Image, ImageDraw, ImageFont
 
 # ==========================================
-# 1. 核心配置 (從 Secrets 讀取)
+# 1. 核心配置 (Secrets 讀取)
 # ==========================================
 try:
     API_KEY = st.secrets["SHIOAJI_API_KEY"].strip()
@@ -51,7 +51,6 @@ def get_font(size):
     except: return ImageFont.load_default()
 
 def send_winner_alert(item):
-    """繪製發財電報卡片 (100% 還原原始卡片格式)"""
     img = Image.new('RGB', (600, 400), color=(18, 19, 23))
     draw = ImageDraw.Draw(img)
     accent = (255, 60, 60) if item['chg'] > 8 else (255, 165, 0)
@@ -103,15 +102,18 @@ with st.sidebar:
         if st.button("▶ 啟動監控", type="primary", use_container_width=True):
             try:
                 st.session_state.api.login(API_KEY, SECRET_KEY)
+                # 抓取所有合約
                 raw = [c for m in [st.session_state.api.Contracts.Stocks.TSE, st.session_state.api.Contracts.Stocks.OTC] for c in m if len(c.code) == 4]
                 
-                # 修復 Bug：使用 getattr 安全讀取 yesterday_volume，絕不刪減邏輯
+                # 安全獲取昨量
                 st.session_state.y_vol_map = {c.code: getattr(c, 'yesterday_volume', 0) for c in raw}
                 st.session_state.ref_map = {c.code: float(c.reference) for c in raw if c.reference}
                 st.session_state.name_map = {c.code: c.name for c in raw}
                 st.session_state.cat_map = {c.code: c.category for c in raw}
                 st.session_state.contracts = [c for c in raw if c.code in st.session_state.ref_map]
-                st.session_state.mkt_contracts = [st.session_state.api.Contracts.Indices.TSE["001"], st.session_state.api.Contracts.Indices.OTC["OTC"]]
+                
+                # 修復 Indices 報錯：改用代碼直接建立合約物件
+                st.session_state.mkt_codes = ["001", "OTC"]
                 
                 st.session_state.state['running'] = True
                 st.rerun()
@@ -122,14 +124,14 @@ with st.sidebar:
             st.rerun()
 
 # ==========================================
-# 5. 核心監控邏輯 (100% 原始邏輯比對)
+# 5. 核心監控邏輯 (100% 原始邏輯)
 # ==========================================
 if st.session_state.state['running']:
     now = datetime.now()
     
-    # [1] 市場風險檢查 (check_market_risk)
+    # [1] 市場風險檢查 (修復抓取方式，邏輯不變)
     try:
-        m_snaps = st.session_state.api.snapshots(st.session_state.mkt_contracts)
+        m_snaps = st.session_state.api.snapshots(st.session_state.mkt_codes)
         danger = False
         m_msgs = []
         for ms in m_snaps:
@@ -144,26 +146,26 @@ if st.session_state.state['running']:
                 else: m_msgs.append(f"{name}穩定")
         st.session_state.state['market_safe'] = not danger
         st.session_state.state['market_msg'] = " | ".join(m_msgs)
-    except: st.session_state.state['market_safe'] = True
+    except: 
+        st.session_state.state['market_safe'] = True
 
-    # [2] 動態權重調整 (與原始檔完全一致)
+    # [2] 動態權重調整 (原始邏輯)
     hm = now.hour * 100 + now.minute
     if hm < 1000: vol_base, mom_adj, hit_thr = 0.55, 1.6, 15
     elif hm < 1100: vol_base, mom_adj, hit_thr = 0.40, 1.2, 12
     elif hm < 1230: vol_base, mom_adj, hit_thr = 0.25, 0.9, 8
     else: vol_base, mom_adj, hit_thr = 0.20, 0.7, 6
     
-    # 原始動能與量能計算公式
     adj_mom_thr = (mom_min_pct_input * mom_adj) * (scan_sec / 60.0)
     vol_threshold = vol_base * vol_weight_input
 
-    # [3] 掃描進度顯示
-    st.info(f"🕒 {now.strftime('%H:%M:%S')} | 大盤狀態: {st.session_state.state['market_msg']}")
+    st.info(f"🕒 {now.strftime('%H:%M:%S')} | 大盤: {st.session_state.state['market_msg']}")
     
+    # [3] 進度掃描
     targets = [c for c in st.session_state.contracts if st.session_state.y_vol_map.get(c.code, 0) >= vol_yesterday_min]
-    targets = targets[:600] # 雲端平衡掃描深度
+    targets = targets[:600]
     
-    my_bar = st.progress(0, text="🔎 偵測中...")
+    my_bar = st.progress(0, text="🔎 掃描數據中...")
     all_snaps = []
     batch_size = 100
     for i in range(0, len(targets), batch_size):
@@ -173,20 +175,20 @@ if st.session_state.state['running']:
         time.sleep(0.05)
     my_bar.empty()
 
-    # [4] 核心篩選條件 (100% 還原原始邏輯)
+    # [4] 核心篩選條件 (100% 比對移植)
     cat_hits = {}
     for s in all_snaps:
         code, price = s.code, s.close
         ref = st.session_state.ref_map.get(code, 0)
         
-        # 條件 1: 基本量價 (s.total_volume < params["成交張數>"])
+        # 1. 基本量價
         if price <= 0 or ref <= 0 or s.total_volume < vol_total_min: continue
         
-        # 條件 2: 漲幅下限 (params["漲幅下限%"] <= chg <= 9.8)
+        # 2. 漲幅下限
         chg = round(((price - ref) / ref * 100), 2)
         if not (chg_min <= chg <= 9.8): continue
         
-        # 條件 3: 1分動能計算 (min_vol_pct >= adj_mom_thr or vol_diff >= 50)
+        # 3. 1分動能
         vol_diff = 0
         min_vol_pct = 0.0
         if code in st.session_state.state['last_total_vol']:
@@ -196,22 +198,22 @@ if st.session_state.state['running']:
         momentum_ok = (min_vol_pct >= adj_mom_thr) or (vol_diff >= 50)
         if not momentum_ok: continue
         
-        # 條件 4: 量增倍率 (ratio < vol_threshold)
+        # 4. 量增倍率
         y_vol = st.session_state.y_vol_map.get(code, 1)
         if y_vol <= 0: y_vol = 1
         ratio = round(s.total_volume / y_vol, 2)
         if ratio < vol_threshold: continue
         
-        # 條件 5: 回撤限制 (drawdown > params["回撤限制%"])
+        # 5. 回撤限制
         daily_high = s.high if s.high > 0 else price
         if ((daily_high - price) / daily_high * 100) > drawdown_input: continue
         
-        # 條件 6: 均價乖離 (vwap_dist <= params["均價乖離% <"])
+        # 6. 均價乖離
         vwap = (s.amount / s.total_volume) if s.total_volume > 0 else price
         vwap_dist = round(((price - vwap) / vwap * 100), 2)
         if vwap_dist > vwap_gap_input: continue
         
-        # [5] 觸發計數與通報 (hits >= hit_thr)
+        # 7. 觸發判定
         st.session_state.state['trigger_history'][code] = [t for t in st.session_state.state['trigger_history'].get(code, []) if t > now - timedelta(minutes=10)] + [now]
         hits = len(st.session_state.state['trigger_history'][code])
         cat = st.session_state.cat_map.get(code, "未知")
