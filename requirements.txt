@@ -1,6 +1,6 @@
 shioaji
 streamlit
 pandas
+pillow
+xlsxwriter
 requests
-plotly
-kaleido
