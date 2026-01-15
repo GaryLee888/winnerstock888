@@ -20,10 +20,8 @@ except Exception as e:
     st.error("❌ 找不到 Secrets 設定！請在 Settings -> Secrets 填入金鑰。")
     st.stop()
 
-st.set_page_config(page_title="當沖雷達-雲端終極版", layout="wide")
-
-# 時區校正
-TZ_TW = timezone(timedelta(hours=8))
+st.set_page_config(page_title="當沖雷達-雲端穩定版", layout="wide")
+TZ_TW = timezone(timedelta(hours=8)) # 台灣時區校正
 
 # ==========================================
 # 2. 初始化 Session State
@@ -35,7 +33,7 @@ if 'state' not in st.session_state:
         'reported_codes': set(),
         'last_total_vol': {},
         'market_safe': True,
-        'market_msg': "等待數據...",
+        'market_msg': "大盤數據收集中...",
         'market_history': {"001": [], "OTC": []},
         'trigger_history': {}
     }
@@ -44,7 +42,7 @@ if 'api' not in st.session_state:
     st.session_state.api = sj.Shioaji()
 
 # ==========================================
-# 3. 工具函式
+# 3. 工具函式 (卡片繪製與 Discord)
 # ==========================================
 def get_font(size):
     try:
@@ -54,7 +52,7 @@ def get_font(size):
     except: return ImageFont.load_default()
 
 def send_winner_alert(item):
-    """100% 原始卡片邏輯還原"""
+    """100% 原始卡片繪製邏輯"""
     img = Image.new('RGB', (600, 400), color=(18, 19, 23))
     draw = ImageDraw.Draw(img)
     accent = (255, 60, 60) if item['chg'] > 8 else (255, 165, 0)
@@ -71,13 +69,13 @@ def send_winner_alert(item):
     img.save(buf, format='PNG')
     buf.seek(0)
     try:
-        requests.post(DISCORD_WEBHOOK_URL, data={"content": f"🚀 **{item['code']} {item['name']}** 爆發中！"}, 
+        requests.post(DISCORD_WEBHOOK_URL, data={"content": f"🚀 **{item['code']} {item['name']}** 爆發！"}, 
                       files={"file": (f"{item['code']}.png", buf, "image/png")}, timeout=10)
         return True
     except: return False
 
 # ==========================================
-# 4. UI 介面
+# 4. 主畫面與存檔功能
 # ==========================================
 st.title("🚀 當沖雷達 - 雲端不間斷監控版")
 
@@ -87,14 +85,19 @@ if st.session_state.state['history']:
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df_save.to_excel(writer, index=False)
-    st.download_button("📥 下載目前通報紀錄 (Excel)", output.getvalue(), 
+    st.download_button("📥 下載目前紀錄 (Excel)", output.getvalue(), 
                        file_name=f"Trade_Log_{datetime.now(TZ_TW).strftime('%m%d_%H%M')}.xlsx", type="primary")
 
-progress_placeholder = st.empty()
+# 進度條與狀態佔位符 (Bug 修復：防止畫面閃爍)
+status_container = st.empty()
+progress_container = st.empty()
 
+# ==========================================
+# 5. 側邊欄參數 (原始條件 100% 鎖定)
+# ==========================================
 with st.sidebar:
     st.header("🎯 監控參數 (原始條件)")
-    scan_sec = st.slider("掃頻(秒)", 5, 60, 10)
+    scan_sec = st.slider("掃頻週期(秒)", 5, 60, 10)
     chg_min = st.number_input("漲幅下限%", value=2.5)
     vol_yesterday_min = st.number_input("昨日交易量>", value=3000)
     vol_total_min = st.number_input("今日成交張數>", value=3000)
@@ -105,7 +108,7 @@ with st.sidebar:
     
     st.divider()
     if st.button("🧪 測試 Discord 發報", use_container_width=True):
-        send_winner_alert({"code":"9999", "name":"測試", "price":100, "chg":5, "tp":102.5, "sl":98.5, "cond":"測試"})
+        send_winner_alert({"code":"TEST", "name":"測試", "price":100, "chg":5, "tp":105, "sl":98, "cond":"測試"})
     
     st.divider()
     if not st.session_state.state['running']:
@@ -128,19 +131,18 @@ with st.sidebar:
             st.rerun()
 
 # ==========================================
-# 5. 核心監控邏輯
+# 6. 核心監控邏輯 (100% 原始比對)
 # ==========================================
 if st.session_state.state['running']:
-    # 修正登入檢查 Bug: 使用 list_accounts 測試連線
+    # 檢查登入狀態 (修復 AttributeError)
     try:
-        if not st.session_state.api.list_accounts():
-            st.session_state.api.login(API_KEY, SECRET_KEY)
+        st.session_state.api.list_accounts()
     except:
         st.session_state.api.login(API_KEY, SECRET_KEY)
 
     now = datetime.now(TZ_TW)
     
-    # [A] 大盤風險 (100% 原始邏輯)
+    # [A] 大盤風險檢查
     try:
         m_snaps = st.session_state.api.snapshots(st.session_state.mkt_codes)
         danger = False
@@ -159,13 +161,13 @@ if st.session_state.state['running']:
         st.session_state.state['market_msg'] = " | ".join(m_msgs)
     except: st.session_state.state['market_safe'] = True
 
-    st.info(f"🕒 更新時間: {now.strftime('%H:%M:%S')} | 大盤: {st.session_state.state['market_msg']}")
+    status_container.info(f"🕒 更新時間: {now.strftime('%H:%M:%S')} | 大盤: {st.session_state.state['market_msg']}")
 
-    # [B] 分批掃描 (進度條功能)
+    # [B] 進度掃描
     targets = [c for c in st.session_state.contracts if st.session_state.y_vol_map.get(c.code, 0) >= vol_yesterday_min]
     targets = targets[:600]
     
-    with progress_placeholder.container():
+    with progress_container:
         bar = st.progress(0, text="🔎 雷達偵測中...")
         all_snaps = []
         batch_size = 100
@@ -175,7 +177,7 @@ if st.session_state.state['running']:
             percent = min((i + batch_size) / len(targets), 1.0)
             bar.progress(percent, text=f"🔎 掃描進度 ({int(percent*100)}%)")
             time.sleep(0.05)
-        bar.empty()
+        bar.empty() # 物理移除進度條防止畫面閃爍
 
     # [C] 原始篩選條件 100% 絕對不變
     hm = now.hour * 100 + now.minute
