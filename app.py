@@ -22,7 +22,7 @@ except Exception as e:
 
 st.set_page_config(page_title="當沖雷達-雲端終極版", layout="wide")
 
-# 時區校正 (防止雲端伺服器時差導致邏輯錯誤)
+# 時區校正
 TZ_TW = timezone(timedelta(hours=8))
 
 # ==========================================
@@ -71,7 +71,7 @@ def send_winner_alert(item):
     img.save(buf, format='PNG')
     buf.seek(0)
     try:
-        requests.post(DISCORD_WEBHOOK_URL, data={"content": f"🚀 **{item['code']} {item['name']}** 觸發條件！"}, 
+        requests.post(DISCORD_WEBHOOK_URL, data={"content": f"🚀 **{item['code']} {item['name']}** 爆發中！"}, 
                       files={"file": (f"{item['code']}.png", buf, "image/png")}, timeout=10)
         return True
     except: return False
@@ -81,7 +81,6 @@ def send_winner_alert(item):
 # ==========================================
 st.title("🚀 當沖雷達 - 雲端不間斷監控版")
 
-# 手動存檔下載區
 if st.session_state.state['history']:
     st.subheader("💾 數據手動存檔")
     df_save = pd.DataFrame(st.session_state.state['history'])
@@ -106,7 +105,7 @@ with st.sidebar:
     
     st.divider()
     if st.button("🧪 測試 Discord 發報", use_container_width=True):
-        send_winner_alert({"code":"9999", "name":"測試", "price":100, "chg":5, "tp":102.5, "sl":98.5, "cond":"手動測試"})
+        send_winner_alert({"code":"9999", "name":"測試", "price":100, "chg":5, "tp":102.5, "sl":98.5, "cond":"測試"})
     
     st.divider()
     if not st.session_state.state['running']:
@@ -129,16 +128,19 @@ with st.sidebar:
             st.rerun()
 
 # ==========================================
-# 5. 核心監控邏輯 (100% 原始比對)
+# 5. 核心監控邏輯
 # ==========================================
 if st.session_state.state['running']:
-    # 斷線重連機制
-    if not st.session_state.api.is_loggedin():
+    # 修正登入檢查 Bug: 使用 list_accounts 測試連線
+    try:
+        if not st.session_state.api.list_accounts():
+            st.session_state.api.login(API_KEY, SECRET_KEY)
+    except:
         st.session_state.api.login(API_KEY, SECRET_KEY)
 
-    now = datetime.now(TZ_TW) # 使用台灣時區
+    now = datetime.now(TZ_TW)
     
-    # [A] 市場風險
+    # [A] 大盤風險 (100% 原始邏輯)
     try:
         m_snaps = st.session_state.api.snapshots(st.session_state.mkt_codes)
         danger = False
@@ -159,7 +161,7 @@ if st.session_state.state['running']:
 
     st.info(f"🕒 更新時間: {now.strftime('%H:%M:%S')} | 大盤: {st.session_state.state['market_msg']}")
 
-    # [B] 進度掃描
+    # [B] 分批掃描 (進度條功能)
     targets = [c for c in st.session_state.contracts if st.session_state.y_vol_map.get(c.code, 0) >= vol_yesterday_min]
     targets = targets[:600]
     
