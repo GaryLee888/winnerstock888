@@ -11,9 +11,7 @@ from PIL import Image, ImageDraw, ImageFont
 # ==========================================
 # 1. 配置與秘鑰 (建議部屬時改用 st.secrets)
 # ==========================================
-API_KEY = "5FhL23V9b4zhqK6yMnMK3SdvCAnCdHAtrESypTGprqRz"
-SECRET_KEY = "HV8yi9TPBEpyTYxNFyLyEB9tiEjnWpNZeNLcVyf4WRw"
-DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1457393304537927764/D2vpM73dMl2Z-bLfI0Us52eGdCQyjztASwkBP3RzyF2jaALzEeaigajpXQfzsgLdyzw4"
+
 
 st.set_page_config(page_title="當沖雷達-勝率最佳化Web版", layout="wide")
 
@@ -224,4 +222,5 @@ if st.session_state.state['running']:
     st.rerun()
 else:
     st.warning("監控停止中，請從側邊欄啟動。")
+
 
