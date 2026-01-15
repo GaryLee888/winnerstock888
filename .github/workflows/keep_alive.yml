@@ -1,12 +1,23 @@
-name: Keep Alive Streamlit
+name: 24H_Radar_Keep_Alive
+
+# 設定觸發條件
 on:
   schedule:
-    - cron: '0 */1 * * *' # 每小時執行一次
-  workflow_dispatch: # 支援手動觸發
+    # 這裡設定每 15 分鐘執行一次 (UTC 時間)
+    # 雲端伺服器只要 20-30 分鐘沒人看就會休眠，所以 15 分鐘最保險
+    - cron: '*/15 * * * *'
+  workflow_dispatch: # 讓您可以在 GitHub 頁面上手動點擊執行測試
 
 jobs:
-  ping:
+  ping_app:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping Streamlit App
-        run: curl -I https://winnerstock888-fbgrrwk5uur9hzvwezt6z3.streamlit.app/
+      - name: 傳送喚醒信號
+        run: |
+          # 使用 curl 模擬真實瀏覽器訪問，避免 303 重新導向錯誤
+          curl -L -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" \
+          https://winnerstock888-fbgrrwk5uur9hzvwezt6z3.streamlit.app/ \
+          -o /dev/null -s -w "%{http_code}"
+          
+      - name: 檢查執行結果
+        run: echo "喚醒指令已於 $(date) 發送完成"
