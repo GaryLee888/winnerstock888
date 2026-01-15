@@ -17,14 +17,14 @@ try:
     SECRET_KEY = st.secrets["SHIOAJI_SECRET_KEY"].strip()
     DISCORD_WEBHOOK_URL = st.secrets["DISCORD_WEBHOOK_URL"].strip()
 except Exception as e:
-    st.error("❌ 找不到 Secrets 設定！請在 Settings -> Secrets 填入正確的金鑰與網址。")
+    st.error("❌ 找不到 Secrets 設定！請在 Settings -> Secrets 填入正確的金鑰。")
     st.stop()
 
-st.set_page_config(page_title="當沖雷達-生產穩定版", layout="wide")
+st.set_page_config(page_title="當沖雷達-雲端穩定版", layout="wide")
 TZ_TW = timezone(timedelta(hours=8)) # 台灣時區強制校正
 
 # ==========================================
-# 2. 初始化 Session State (確保資料保存)
+# 2. 初始化 Session State
 # ==========================================
 if 'state' not in st.session_state:
     st.session_state.state = {
@@ -69,16 +69,33 @@ def send_winner_alert(item):
     img.save(buf, format='PNG')
     buf.seek(0)
     try:
-        requests.post(DISCORD_WEBHOOK_URL, data={"content": f"🚀 **{item['code']} {item['name']}** 觸發條件！"}, 
+        requests.post(DISCORD_WEBHOOK_URL, data={"content": f"🚀 **{item['code']} {item['name']}** 爆發！"}, 
                       files={"file": (f"{item['code']}.png", buf, "image/png")}, timeout=10)
         return True
     except: return False
 
 # ==========================================
-# 4. 側邊欄與存檔 UI
+# 4. 主畫面佈局
+# ==========================================
+st.title("🚀 當沖雷達 - 雲端不間斷監控版")
+
+# 下載按鈕 (優先顯示)
+if st.session_state.state['history']:
+    df_save = pd.DataFrame(st.session_state.state['history'])
+    output_excel = io.BytesIO()
+    with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
+        df_save.to_excel(writer, index=False)
+    st.download_button("📥 立即下載今日戰果 (Excel)", output_excel.getvalue(), 
+                       file_name=f"Trade_Log_{datetime.now(TZ_TW).strftime('%m%d_%H%M')}.xlsx", type="primary")
+
+status_placeholder = st.empty()
+progress_placeholder = st.empty()
+
+# ==========================================
+# 5. 側邊欄參數 (原始條件 100% 絕對不變)
 # ==========================================
 with st.sidebar:
-    st.header("🎯 核心監控參數 (原始條件)")
+    st.header("🎯 核心監控參數")
     scan_sec = st.slider("掃頻週期(秒)", 5, 60, 10)
     chg_min = st.number_input("漲幅下限%", value=2.5)
     vol_yesterday_min = st.number_input("昨日交易量>", value=3000)
@@ -113,26 +130,10 @@ with st.sidebar:
             st.rerun()
 
 # ==========================================
-# 5. 主畫面監控與下載區
-# ==========================================
-st.title("🚀 當沖雷達 - 雲端不間斷監控版")
-
-if st.session_state.state['history']:
-    df_save = pd.DataFrame(st.session_state.state['history'])
-    output_excel = io.BytesIO()
-    with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
-        df_save.to_excel(writer, index=False)
-    st.download_button("📥 下載目前通報紀錄 (Excel)", output_excel.getvalue(), 
-                       file_name=f"Trade_Log_{datetime.now(TZ_TW).strftime('%m%d_%H%M')}.xlsx", type="primary")
-
-status_container = st.empty()
-progress_container = st.empty()
-
-# ==========================================
-# 6. 核心監控循環 (100% 原始比對)
+# 6. 核心監控邏輯 (100% 原始還原)
 # ==========================================
 if st.session_state.state['running']:
-    # API 存活檢查
+    # API 連線自動重連
     try:
         st.session_state.api.list_accounts()
     except:
@@ -148,7 +149,6 @@ if st.session_state.state['running']:
         for ms in m_snaps:
             if ms.close <= 0: continue
             name = "加權" if ms.code == "001" else "櫃買"
-            # 清理過期數據，僅保留 10 分鐘
             st.session_state.state['market_history'][ms.code] = [(t, p) for t, p in st.session_state.state['market_history'][ms.code] if t > now - timedelta(minutes=10)]
             st.session_state.state['market_history'][ms.code].append((now, ms.close))
             past = [p for t, p in st.session_state.state['market_history'][ms.code] if t < now - timedelta(minutes=2)]
@@ -160,32 +160,30 @@ if st.session_state.state['running']:
         st.session_state.state['market_msg'] = " | ".join(m_msgs) if m_msgs else "大盤數據收集中..."
     except: st.session_state.state['market_safe'] = True
 
-    status_container.info(f"🕒 更新時間: {now.strftime('%H:%M:%S')} | 大盤: {st.session_state.state['market_msg']}")
+    status_placeholder.info(f"🕒 更新時間: {now.strftime('%H:%M:%S')} | 大盤: {st.session_state.state['market_msg']}")
 
-    # [B] 分抵掃描與進度條
+    # [B] 進度掃描 (優化進度條顯示)
     targets = [c for c in st.session_state.contracts if st.session_state.y_vol_map.get(c.code, 0) >= vol_yesterday_min]
-    targets = targets[:600] # 平衡雲端負載與偵測深度
+    targets = targets[:600]
     
-    all_snaps = []
     batch_size = 100
-    with progress_container:
+    all_snaps = []
+    with progress_placeholder.container():
         bar = st.progress(0, text="🔎 雷達偵測中...")
         for i in range(0, len(targets), batch_size):
             batch = targets[i : i+batch_size]
             all_snaps.extend(st.session_state.api.snapshots(batch))
             percent = min((i + batch_size) / len(targets), 1.0)
             bar.progress(percent, text=f"🔎 掃描進度 ({int(percent*100)}%)")
-            time.sleep(0.05) # 防護間隔
+            time.sleep(0.05)
         bar.empty()
 
-    # [C] 原始過濾邏輯 100% 絕對還原
+    # [C] 原始過濾邏輯 100% 絕對不變
     hm = now.hour * 100 + now.minute
     if hm < 1000: vol_base, mom_adj, hit_thr = 0.55, 1.6, 15
     elif hm < 1100: vol_base, mom_adj, hit_thr = 0.40, 1.2, 12
     elif hm < 1230: vol_base, mom_adj, hit_thr = 0.25, 0.9, 8
     else: vol_base, mom_adj, hit_thr = 0.20, 0.7, 6
-    
-    # 原始 1 分鐘動能閾值計算
     adj_mom_thr = (mom_min_pct * mom_adj) * (scan_sec / 60.0)
     vol_threshold = vol_base * vol_weight
     
@@ -193,44 +191,35 @@ if st.session_state.state['running']:
     for s in all_snaps:
         code, price = s.code, s.close
         ref = st.session_state.ref_map.get(code, 0)
-        
-        # 門檻 1: 成交張數門檻
         if price <= 0 or ref <= 0 or s.total_volume < vol_total_min: continue
-        
-        # 門檻 2: 漲幅下限
         chg = round(((price - ref) / ref * 100), 2)
         if not (chg_min <= chg <= 9.8): continue
         
-        # 門檻 3: 1分動能與量增率 (原始公式)
+        # 1分動能與量增率 (原始公式)
         vol_diff = 0
         min_vol_pct = 0.0
         if code in st.session_state.state['last_total_vol']:
             vol_diff = s.total_volume - st.session_state.state['last_total_vol'][code]
             if vol_diff > 0: min_vol_pct = round((vol_diff / s.total_volume) * 100, 2)
         st.session_state.state['last_total_vol'][code] = s.total_volume
-        
-        # 動能條件判定
         momentum_ok = (min_vol_pct >= adj_mom_thr) or (vol_diff >= 50)
         if not momentum_ok: continue
         
-        # 門檻 4: 量增倍率 (Ratio)
         y_vol = st.session_state.y_vol_map.get(code, 1)
         ratio = round(s.total_volume / (y_vol if y_vol > 0 else 1), 2)
         if ratio < vol_threshold: continue
         
-        # 門檻 5: 原始回撤限制 (1.2%) 與 均價乖離 (3.5%)
+        # 回撤限制 (1.2%) 與 均價乖離 (3.5%)
         daily_high = s.high if s.high > 0 else price
         vwap = (s.amount / s.total_volume) if s.total_volume > 0 else price
         vwap_dist = round(((price - vwap) / vwap * 100), 2)
         
         if ((daily_high - price) / daily_high * 100) <= drawdown_limit and vwap_dist <= vwap_gap_limit:
-            # 觸發次數計數
             st.session_state.state['trigger_history'][code] = [t for t in st.session_state.state['trigger_history'].get(code, []) if t > now - timedelta(minutes=10)] + [now]
             hits = len(st.session_state.state['trigger_history'][code])
             cat = st.session_state.cat_map.get(code, "未知")
             cat_hits[cat] = cat_hits.get(cat, 0) + 1
             
-            # 通報判定
             if hits >= hit_thr and code not in st.session_state.state['reported_codes'] and st.session_state.state['market_safe']:
                 item = {
                     "通報時間": now.strftime("%H:%M:%S"), "代碼": code, "名稱": st.session_state.name_map.get(code),
@@ -238,12 +227,10 @@ if st.session_state.state['running']:
                     "sl": round(price * 0.985, 2), "tp": round(price * 1.025, 2),
                     "cond": f"🔥 {cat}連動" if cat_hits.get(cat, 0) >= 2 else "🚀 短線爆發"
                 }
-                # 使用臨時變數更新，防止渲染衝突
                 st.session_state.state['history'].append(item)
                 st.session_state.state['reported_codes'].add(code)
                 send_winner_alert(item)
 
-    # [D] 顯示與倒數
     if st.session_state.state['history']:
         st.dataframe(pd.DataFrame(st.session_state.state['history']).tail(15), use_container_width=True)
     
