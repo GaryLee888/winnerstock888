@@ -12,10 +12,10 @@ jobs:
       - name: 傳送喚醒信號
         run: |
           # 移除 -f 以免 303 導向導致報錯
-          # 加入 -L 確保跟隨導向
+          # 使用 || true 確保 GitHub 流程不會因為回傳值而中斷
           curl -L -k -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36" \
           https://winnerstock888-fbgrrwk5uur9hzvwezt6z3.streamlit.app/ \
-          -o /dev/null -s -w "回傳狀態碼: %{http_code}\n"
+          -o /dev/null -s -w "回傳狀態碼: %{http_code}\n" || true
           
       - name: 狀態確認
         run: echo "喚醒指令執行完畢，時間：$(date)"
