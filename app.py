@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from PIL import Image, ImageDraw, ImageFont
 
 # ==========================================
-# 1. 核心配置與初始化
+# 1. 核心配置 (Secrets 讀取)
 # ==========================================
 try:
     API_KEY = st.secrets["SHIOAJI_API_KEY"].strip()
@@ -20,8 +20,11 @@ except Exception as e:
     st.error("❌ 找不到 Secrets 設定！請在 Settings -> Secrets 填入金鑰。")
     st.stop()
 
-st.set_page_config(page_title="當沖雷達-雲端終極版", layout="wide")
+st.set_page_config(page_title="當沖雷達-完整功能版", layout="wide")
 
+# ==========================================
+# 2. 初始化 Session State
+# ==========================================
 if 'state' not in st.session_state:
     st.session_state.state = {
         'running': False,
@@ -38,7 +41,7 @@ if 'api' not in st.session_state:
     st.session_state.api = sj.Shioaji()
 
 # ==========================================
-# 2. 工具函式
+# 3. 工具函式
 # ==========================================
 def get_font(size):
     try:
@@ -48,35 +51,70 @@ def get_font(size):
     except: return ImageFont.load_default()
 
 def send_winner_alert(item):
+    """繪製發財電報卡片"""
     img = Image.new('RGB', (600, 400), color=(18, 19, 23))
     draw = ImageDraw.Draw(img)
     accent = (255, 60, 60) if item['chg'] > 8 else (255, 165, 0)
     draw.rectangle([0, 0, 15, 400], fill=accent)
-    draw.rectangle([15, 0, 600, 50], fill=(255, 215, 0))
-    draw.text((40, 10), "🚀 財神降臨！發揮電報 💰💰💰", fill=(0, 0, 0), font=get_font(24))
-    draw.text((40, 75), f"{item['code']} {item['name']}", fill=(255, 255, 255), font=get_font(44))
-    draw.text((40, 140), f"{item['price']}", fill=accent, font=get_font(75))
-    draw.text((320, 170), f"{item['chg']}%", fill=accent, font=get_font(35))
-    draw.text((40, 250), f"目標停利：{item['tp']:.2f} | 停損：{item['sl']:.2f}", fill=(255, 60, 60), font=get_font(24))
+    draw.rectangle([15, 0, 600, 45], fill=(255, 215, 0))
+    draw.text((40, 8), "🚀 財神降臨！發財電報 💰💰💰", fill=(0, 0, 0), font=get_font(22))
+    draw.text((40, 65), f"{item['code']} {item['name']}", fill=(255, 255, 255), font=get_font(44))
+    draw.text((40, 130), f"{item['price']}", fill=accent, font=get_font(70))
+    draw.text((320, 160), f"{item['chg']}%", fill=accent, font=get_font(30))
+    draw.text((40, 240), f"目標停利：{item['tp']:.2f}", fill=(255, 60, 60), font=get_font(26))
+    draw.text((310, 240), f"建議停損：{item['sl']:.2f}", fill=(0, 200, 0), font=get_font(26))
+    
     buf = io.BytesIO()
     img.save(buf, format='PNG')
     buf.seek(0)
+    
+    content = f"🚀 **發財電報！** 💰 **{item['code']} {item['name']}** 爆發中！\n訊號: {item['cond']}"
     try:
-        requests.post(DISCORD_WEBHOOK_URL, data={"content": f"🚀 **{item['code']} {item['name']}** 觸發條件！"}, 
+        requests.post(DISCORD_WEBHOOK_URL, data={"content": content}, 
                       files={"file": (f"{item['code']}.png", buf, "image/png")}, timeout=10)
-    except: pass
+        return True
+    except Exception as e:
+        st.error(f"Discord 發送失敗: {e}")
+        return False
 
 # ==========================================
-# 3. UI 介面
+# 4. UI 介面 (加入測試與存檔按鈕)
 # ==========================================
 with st.sidebar:
     st.header("🎯 核心監控參數")
-    scan_sec = st.slider("掃頻週期(秒)", 5, 60, 10)
+    scan_sec = st.slider("掃頻(秒)", 5, 60, 10)
     chg_min = st.number_input("漲幅下限%", value=2.5, step=0.1)
     vol_total_min = st.number_input("今日成交張數>", value=3000)
-    mom_min_pct = st.number_input("1分動能% >", value=1.5)
     vwap_gap_limit = st.number_input("均價乖離% <", value=3.5)
     
+    st.divider()
+    
+    # 測試發報按鈕
+    if st.button("🧪 測試發報 Discord", use_container_width=True):
+        test_item = {
+            "code": "9999", "name": "測試標的", "price": 100.0, "chg": 5.0, 
+            "tp": 102.5, "sl": 98.5, "cond": "系統測試中"
+        }
+        if send_winner_alert(test_item):
+            st.success("測試訊息已發送，請檢查 Discord！")
+
+    # 手動存檔按鈕
+    if st.session_state.state['history']:
+        st.subheader("💾 資料存檔")
+        df_exp = pd.DataFrame(st.session_state.state['history'])
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            df_exp.to_excel(writer, index=False)
+        st.download_button(
+            label="📥 點擊下載今日 Excel",
+            data=output.getvalue(),
+            file_name=f"Trade_Report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+            mime="application/vnd.ms-excel",
+            use_container_width=True
+        )
+
+    st.divider()
+
     if not st.session_state.state['running']:
         if st.button("▶ 啟動監控", type="primary", use_container_width=True):
             try:
@@ -85,6 +123,7 @@ with st.sidebar:
                 st.session_state.ref_map = {c.code: float(c.reference) for c in raw if c.reference}
                 st.session_state.name_map = {c.code: c.name for c in raw}
                 st.session_state.cat_map = {c.code: c.category for c in raw}
+                st.session_state.yesterday_vol_map = {c.code: c.yesterday_volume for c in raw}
                 st.session_state.contracts = [c for c in raw if c.code in st.session_state.ref_map]
                 st.session_state.mkt_contracts = [st.session_state.api.Contracts.Indices.TSE["001"], st.session_state.api.Contracts.Indices.OTC["OTC"]]
                 st.session_state.state['running'] = True
@@ -96,12 +135,12 @@ with st.sidebar:
             st.rerun()
 
 # ==========================================
-# 4. 監控邏輯 (含進度條)
+# 5. 監控邏輯 (100% 還原核心篩選)
 # ==========================================
 if st.session_state.state['running']:
     now = datetime.now()
     
-    # 大盤檢查
+    # [大盤檢查與動態閥值邏輯 - 同前，保留所有原始篩選條件]
     try:
         m_snaps = st.session_state.api.snapshots(st.session_state.mkt_contracts)
         danger = False
@@ -120,30 +159,28 @@ if st.session_state.state['running']:
         st.session_state.state['market_msg'] = " | ".join(m_msgs)
     except: st.session_state.state['market_safe'] = True
 
-    # 狀態顯示
-    st.info(f"🕒 最後更新: {now.strftime('%H:%M:%S')} | {'🔴 市場風險' if not st.session_state.state['market_safe'] else '🟢 市場安全'}: {st.session_state.state['market_msg']}")
-    
-    # --- 加入掃描進度條 ---
-    targets = st.session_state.contracts[:500] 
+    hm = now.hour * 100 + now.minute
+    if hm < 1000: vol_base, mom_adj, hit_thr = 0.55, 1.6, 15
+    elif hm < 1100: vol_base, mom_adj, hit_thr = 0.40, 1.2, 12
+    elif hm < 1230: vol_base, mom_adj, hit_thr = 0.25, 0.9, 8
+    else: vol_base, mom_adj, hit_thr = 0.20, 0.7, 6
+    adj_mom_thr = (1.5 * mom_adj) * (scan_sec / 60.0)
+    vol_threshold = vol_base * 1.0
+
+    st.info(f"🕒 {now.strftime('%H:%M:%S')} | 大盤: {st.session_state.state['market_msg']}")
+
+    # 分批掃描 (含進度條)
+    targets = st.session_state.contracts[:600]
     batch_size = 100
-    total_batches = (len(targets) // batch_size) + (1 if len(targets) % batch_size > 0 else 0)
-    
-    progress_text = "🔎 正在掃描全市場標的數據..."
-    my_bar = st.progress(0, text=progress_text)
-    
+    my_bar = st.progress(0, text="🔎 掃描中...")
     all_snaps = []
-    for i in range(total_batches):
-        batch = targets[i*batch_size : (i+1) * batch_size]
+    for i in range(0, len(targets), batch_size):
+        batch = targets[i:i+batch_size]
         all_snaps.extend(st.session_state.api.snapshots(batch))
-        # 更新進度條
-        percent_complete = (i + 1) / total_batches
-        my_bar.progress(percent_complete, text=f"{progress_text} ({int(percent_complete*100)}%)")
-        time.sleep(0.05) # 避免 API 請求過快
-    
-    # 清除進度條 (掃描完畢)
+        my_bar.progress(min((i + batch_size) / len(targets), 1.0))
+        time.sleep(0.05)
     my_bar.empty()
 
-    # 篩選邏輯
     cat_hits = {}
     for s in all_snaps:
         code, price = s.code, s.close
@@ -154,35 +191,35 @@ if st.session_state.state['running']:
         
         # 動能計算
         vol_diff = 0
+        min_vol_pct = 0.0
         if code in st.session_state.state['last_total_vol']:
             vol_diff = s.total_volume - st.session_state.state['last_total_vol'][code]
+            if vol_diff > 0: min_vol_pct = round((vol_diff / s.total_volume) * 100, 2)
         st.session_state.state['last_total_vol'][code] = s.total_volume
         
-        vwap = (s.amount / s.total_volume) if s.total_volume > 0 else price
-        vwap_dist = round(((price - vwap) / vwap * 100), 2)
+        ratio = round(s.total_volume / st.session_state.yesterday_vol_map.get(code, 1), 2)
         
-        if vol_diff >= 50 and vwap_dist <= vwap_gap_limit:
-            st.session_state.state['trigger_history'][code] = [t for t in st.session_state.state['trigger_history'].get(code, []) if t > now - timedelta(minutes=10)] + [now]
-            hits = len(st.session_state.state['trigger_history'][code])
-            cat = st.session_state.cat_map.get(code, "其他")
-            cat_hits[cat] = cat_hits.get(cat, 0) + 1
-            
-            if hits >= 10 and code not in st.session_state.state['reported_codes'] and st.session_state.state['market_safe']:
-                item = {
-                    "通報時間": now.strftime("%H:%M:%S"), "代碼": code, "名稱": st.session_state.name_map.get(code),
-                    "產業": cat, "price": price, "chg": chg, "vwap_dist": vwap_dist,
-                    "sl": round(price * 0.985, 2), "tp": round(price * 1.025, 2), "cond": "量能激增"
-                }
-                st.session_state.state['history'].append(item)
-                st.session_state.state['reported_codes'].add(code)
-                send_winner_alert(item)
+        # 篩選
+        if ((min_vol_pct >= adj_mom_thr) or (vol_diff >= 50)) and (ratio >= vol_threshold):
+            vwap = (s.amount / s.total_volume) if s.total_volume > 0 else price
+            vwap_dist = round(((price - vwap) / vwap * 100), 2)
+            if vwap_dist <= vwap_gap_limit:
+                st.session_state.state['trigger_history'][code] = [t for t in st.session_state.state['trigger_history'].get(code, []) if t > now - timedelta(minutes=10)] + [now]
+                cat = st.session_state.cat_map.get(code, "未知")
+                cat_hits[cat] = cat_hits.get(cat, 0) + 1
+                
+                if len(st.session_state.state['trigger_history'][code]) >= hit_thr and code not in st.session_state.state['reported_codes'] and st.session_state.state['market_safe']:
+                    item = {
+                        "通報時間": now.strftime("%H:%M:%S"), "代碼": code, "名稱": st.session_state.name_map.get(code),
+                        "產業": cat, "price": price, "chg": chg, "vwap_dist": vwap_dist,
+                        "sl": round(price * 0.985, 2), "tp": round(price * 1.025, 2), "cond": "動能爆發"
+                    }
+                    st.session_state.state['history'].append(item)
+                    st.session_state.state['reported_codes'].add(code)
+                    send_winner_alert(item)
 
-    # 顯示結果
     if st.session_state.state['history']:
-        st.subheader("📊 今日通報紀錄")
-        st.dataframe(pd.DataFrame(st.session_state.state['history']).tail(20), use_container_width=True)
-
-    # 倒數計時進入下次掃描
-    st.write(f"⌛ 預計 {scan_sec} 秒後進行下次掃頻...")
+        st.dataframe(pd.DataFrame(st.session_state.state['history']).tail(15), use_container_width=True)
+    
     time.sleep(scan_sec)
     st.rerun()
