@@ -97,7 +97,7 @@ with st.sidebar:
 # ==========================================
 # 5. 自動啟動與核心邏輯
 # ==========================================
-st.title("🚀 當沖雷達 - 24H 雲端自動版")
+st.title("🚀 24H")
 
 # 下載按鈕
 if st.session_state.state['history']:
@@ -228,4 +228,5 @@ if st.session_state.state['running']:
     
     time.sleep(scan_sec)
     st.rerun()
+
 
