@@ -20,7 +20,7 @@ except Exception as e:
     st.error("❌ 找不到 Secrets 設定！請在 Settings -> Secrets 填入正確金鑰。")
     st.stop()
 
-st.set_page_config(page_title="當沖雷達-24H自動版", layout="wide")
+st.set_page_config(page_title="24H監控版", layout="wide")
 TZ_TW = timezone(timedelta(hours=8)) # 強制台灣時區
 
 # ==========================================
@@ -78,7 +78,7 @@ def send_winner_alert(item):
 # ==========================================
 # 4. UI 介面
 # ==========================================
-st.title("🚀 當沖雷達 - 24H 雲端自動版")
+st.title("🚀 24H監控版")
 
 # 手動存檔區
 if st.session_state.state['history']:
@@ -229,3 +229,4 @@ if st.session_state.state['running']:
 
     time.sleep(scan_sec)
     st.rerun()
+
