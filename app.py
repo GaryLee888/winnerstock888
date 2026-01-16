@@ -20,7 +20,7 @@ except Exception as e:
     st.error("❌ 找不到 Secrets 設定！請在 Settings -> Secrets 填入金鑰。")
     st.stop()
 
-st.set_page_config(page_title="當沖雷達-即時看板版", layout="wide")
+st.set_page_config(page_title="測試系統", layout="wide")
 TZ_TW = timezone(timedelta(hours=8)) 
 
 # ==========================================
@@ -74,7 +74,7 @@ def send_winner_alert(item):
 # ==========================================
 # 4. UI 介面
 # ==========================================
-st.title("🚀 當沖雷達 - 即時監控看板")
+st.title("🚀 測試系統")
 
 # 下載存檔按鈕
 if st.session_state.state['history']:
@@ -229,3 +229,4 @@ if st.session_state.state['running']:
 
     time.sleep(scan_sec)
     st.rerun()
+
