@@ -84,7 +84,7 @@ def send_winner_alert(item):
 # ==========================================
 # 4. UI 介面
 # ==========================================
-st.title("🚀 監控系統")
+st.title("🚀 測試系統")
 
 # --- ✨ 新增：手動存檔功能區 ---
 if st.session_state.state['history']:
@@ -250,3 +250,4 @@ if st.session_state.state['running']:
 
     time.sleep(scan_sec)
     st.rerun()
+
