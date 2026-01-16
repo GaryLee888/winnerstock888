@@ -20,7 +20,7 @@ except Exception as e:
     st.error("❌ 找不到 Secrets 設定！請在 Settings -> Secrets 填入金鑰。")
     st.stop()
 
-st.set_page_config(page_title="24H 雷達", layout="wide")
+st.set_page_config(page_title="24H 自動當沖雷達", layout="wide")
 TZ_TW = timezone(timedelta(hours=8)) # 台灣時區校正
 
 # ==========================================
@@ -228,4 +228,3 @@ if st.session_state.state['running']:
     
     time.sleep(scan_sec)
     st.rerun()
-
