@@ -20,7 +20,7 @@ except Exception as e:
     st.error("❌ 找不到 Secrets 設定！請在 Settings -> Secrets 填入金鑰。")
     st.stop()
 
-st.set_page_config(page_title="當沖雷達-手動存檔版", layout="wide")
+st.set_page_config(page_title="雷達", layout="wide")
 TZ_TW = timezone(timedelta(hours=8)) 
 
 # ==========================================
@@ -75,7 +75,7 @@ def send_winner_alert(item):
 # ==========================================
 # 4. UI 介面 - 新增手動儲存區
 # ==========================================
-st.title("🚀 當沖雷達 - 24H 雲端自動監控")
+st.title("🚀 雲端監控")
 
 # --- ✨ 新增：手動存檔下載功能 ---
 if st.session_state.state['history']:
@@ -140,3 +140,4 @@ if st.session_state.state['running']:
     # [B] 分批掃描進度 ...
     # [C] 7大過濾邏輯 ...
     pass # 為節省版面，邏輯保持原樣
+
