@@ -20,7 +20,7 @@ except Exception as e:
     st.error("❌ 找不到 Secrets 設定！請在 Settings -> Secrets 填入正確金鑰。")
     st.stop()
 
-st.set_page_config(page_title="當沖雷達-100%邏輯還原版", layout="wide")
+st.set_page_config(page_title="當沖雷達", layout="wide")
 TZ_TW = timezone(timedelta(hours=8)) # 強制台灣時區
 
 # ==========================================
@@ -87,7 +87,7 @@ def send_winner_alert(item):
 # ==========================================
 # 4. UI 與 參數區 (100% 對齊桌面版 Entry)
 # ==========================================
-st.title("🚀 當沖雷達 - 終極邏輯還原版")
+st.title("🚀 123")
 
 with st.sidebar:
     st.header("🎯 核心監控參數")
@@ -248,3 +248,4 @@ if st.session_state.state['running']:
 
     time.sleep(scan_sec)
     st.rerun()
+
