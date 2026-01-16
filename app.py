@@ -20,7 +20,7 @@ except Exception as e:
     st.error("❌ 找不到 Secrets 設定！請在 Settings -> Secrets 填入金鑰。")
     st.stop()
 
-st.set_page_config(page_title="24H 自動當沖雷達", layout="wide")
+st.set_page_config(page_title="24H 雷達", layout="wide")
 TZ_TW = timezone(timedelta(hours=8)) 
 
 # ==========================================
@@ -76,7 +76,7 @@ def send_winner_alert(item):
 # ==========================================
 # 4. UI 介面與自動啟動
 # ==========================================
-st.title("🚀 當沖雷達 - 24H 監控")
+st.title("🚀 24H 監控")
 
 with st.sidebar:
     st.header("🎯 核心參數 (原始邏輯)")
@@ -215,3 +215,4 @@ if st.session_state.state['running']:
     
     time.sleep(scan_sec)
     st.rerun()
+
