@@ -75,7 +75,7 @@ def send_winner_alert(item):
 # ==========================================
 # 4. UI 介面
 # ==========================================
-st.title("🚀 當沖雷達 - 24H 雲端自動監控")
+st.title("🚀 24H 雲端自動監控")
 
 with st.sidebar:
     st.header("🎯 參數設定")
@@ -156,3 +156,4 @@ if st.session_state.state['running']:
 
     time.sleep(scan_sec)
     st.rerun()
+
